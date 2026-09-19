@@ -1,0 +1,38 @@
+{
+  "name": "diepcustom",
+  "version": "1.0.0",
+  "description": "An open source diep.io custom private-server template",
+  "main": "index.js",
+  "contributors": [
+    "ABC <github.com/ABCxFF>",
+    "Binary <github.com/binary-person>",
+    "Crabby <github.com/Craabby>",
+    "diep.io <github.com/diepiodiscord>",
+    "xScripty (Void) <github.com/c86ec23b-fef1-4979-b2fa-b9adc351b8cc>",
+    "Nulled <github.com/Nul-led>"
+  ],
+  "license": "AGPL-3.0-only",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "start": "node index",
+    "build": "npm run check && tsup",
+    "server": "npm run build && npm run start",
+    "dev": "tsup --watch --onSuccess \"npm run check && npm run start\"",
+    "docker:build": "docker build --tag diepcustom .",
+    "docker:start": "docker run --pull never --rm --publish ${PORT:-8080}:8080 --env PORT=8080 --env DEV_PASSWORD_HASH --env SERVER_INFO --env NODE_ENV --init --interactive --tty diepcustom",
+    "docker": "npm run docker:build && npm run docker:start"
+  },
+  "engines": {
+    "node": ">=16.3"
+  },
+  "dependencies": {
+    "chalk": "^4.1.1",
+    "tweetnacl": "^1.0.3",
+    "uWebSockets.js": "github:uNetworking/uWebSockets.js#v20.52.0"
+  },
+  "devDependencies": {
+    "@types/node": "^16.4.0",
+    "tsup": "^8.5.0",
+    "typescript": "^4.8.2"
+  }
+}

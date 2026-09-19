@@ -1,0 +1,179 @@
+/*
+    DiepCustom - custom tank game server that shares diep.io's WebSocket protocol
+    Copyright (C) 2022 ABCxFF (github.com/ABCxFF)
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU Affero General Public License as published
+    by the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU Affero General Public License for more details.
+
+    You should have received a copy of the GNU Affero General Public License
+    along with this program. If not, see <https://www.gnu.org/licenses/>
+*/
+
+import ArenaEntity from "../../Native/Arena";
+import ClientCamera, { CameraEntity } from "../../Native/Camera";
+
+import { Entity } from "../../Native/Entity";
+import { AI, AIState, Inputs } from "../AI";
+
+import ObjectEntity from "../Object";
+import LivingEntity from "../Live";
+import Bullet from "../Tank/Projectile/Bullet";
+import TankBody from "../Tank/TankBody";
+import TeamBase from "./TeamBase";
+
+import { TeamEntity } from "./TeamEntity";
+import { Color, ColorsHexCode, NameFlags, StyleFlags, EntityTags, Tank, ClientBound } from "../../Const/Enums";
+import { randomFrom } from "../../util";
+
+/**
+ * Dominator Tank
+ */
+export default class Dominator extends TankBody {
+    /** Size of a dominator */
+    public static SIZE = 160;
+    
+    /** All dominator tank classes */
+    public static DOMINATOR_CLASSES: Tank[] = [Tank.DominatorD, Tank.DominatorG, Tank.DominatorT];
+
+    /** The AI that controls how the Dominator aims. */
+    public ai: AI;
+
+    /** The base its located on (used to change base color). */
+    public base: TeamBase;
+    
+    public prefix: string | null = "";
+
+    public constructor(arena: ArenaEntity, base: TeamBase, pTankId: Tank | null = null) {
+        const tankId = pTankId || randomFrom(Dominator.DOMINATOR_CLASSES);
+
+        const inputs = new Inputs();
+        const camera = new CameraEntity(arena.game);
+
+        super(arena.game, camera, inputs);
+
+        camera.cameraData.values.player = this;
+        camera.setLevel(75);
+
+        this.scaleFactor = 1;
+        this.scale(Dominator.SIZE / this.baseSize);
+
+        this.setTank(tankId);
+
+        this.relationsData.values.team = arena;
+        this.physicsData.values.size = Dominator.SIZE;
+        // TODO(ABC):
+        // Add setTeam method for this
+        this.styleData.values.color = Color.Neutral;
+
+        this.ai = new AI(this, true);
+        this.ai.inputs = inputs;
+        this.ai.movementSpeed = 0;
+        this.ai.viewRange = 2000;
+        this.ai.doAimPrediction = true;
+
+        const def = (this.definition = Object.assign({}, this.definition));
+        def.speed = camera.cameraData.values.movementSpeed = 0;
+        this.nameData.values.name = "Dominator";
+        this.nameData.values.flags |= NameFlags.hiddenName;
+        this.physicsData.values.absorbtionFactor = 0;
+        
+        this.positionData.values.x = base.positionData.values.x;
+        this.positionData.values.y = base.positionData.values.y;
+        
+        this.scoreReward = 0;
+        camera.cameraData.values.player = this;
+
+        this.base = base;
+
+        this.damagePerTick = 10;
+
+        if (this.styleData.values.flags & StyleFlags.isFlashing) { // Remove spawn shield
+            this.styleData.values.flags ^= StyleFlags.isFlashing;
+            this.damageReduction = 1.0;
+        }
+
+        this.entityTags |= EntityTags.isDominator;
+    }
+
+    public static isDominator(entity: Entity | null | undefined): entity is Dominator {
+        if (!ObjectEntity.isObject(entity)) return false;
+
+        return !!(entity.entityTags & EntityTags.isDominator);
+    }
+
+    public onDeath(killer: LivingEntity) {
+        const killerTeam = killer.relationsData.values.team;
+        
+        if (TeamEntity.isTeam(killerTeam) && this.relationsData.values.team === this.game.arena) { // Only proper teams should capture doms
+            // capture neutral dominator
+            this.relationsData.team = killerTeam;
+            this.styleData.color = killerTeam.teamData.values.teamColor
+            this.game.broadcast()
+                .u8(ClientBound.Notification)
+                .stringNT(`The ${this.prefix}${this.nameData.values.name} is now controlled by ${killerTeam.teamName || "a mysterious group"}`)
+                .u32(ColorsHexCode[killerTeam.teamData.values.teamColor])
+                .float(7500)
+                .stringNT("").send();
+                
+            for (const client of this.game.clients) {
+                const camera = client.camera;
+                if (!camera) continue;
+
+                if (camera.relationsData.values.team === this.relationsData.values.team) {
+                    client.notify(`Press H to take control of the ${this.nameData.values.name}`, ColorsHexCode[killerTeam.teamData.values.teamColor]);
+                }
+            }
+        } else {
+            // set to neutral team
+            this.relationsData.team = this.game.arena
+            this.styleData.color = this.game.arena.teamData.teamColor;
+            
+           this.game.broadcast()
+               .u8(ClientBound.Notification)
+               .stringNT(`The ${this.prefix}${this.nameData.values.name} is being contested`)
+               .u32(ColorsHexCode[Color.Neutral])
+               .float(7500)
+               .stringNT("").send();  
+        }
+
+        this.base.styleData.color = this.styleData.values.color;
+        this.base.relationsData.team = this.relationsData.values.team;
+
+        this.healthData.health = this.healthData.values.maxHealth;
+
+        for (let i = 1; i <= this.game.entities.lastId; ++i) {
+            const entity = this.game.entities.inner[i];
+            if (entity instanceof Bullet && entity.relationsData.values.owner === this) entity.destroy();
+        }
+
+        if (this.ai.state === AIState.possessed) {
+            this.ai.inputs.deleted = true;
+            this.ai.inputs = this.inputs = new Inputs();
+            this.ai.state = AIState.idle;
+        }
+    }
+
+    public tick(tick: number) {
+        if (!this.barrels.length) return super.tick(tick)
+        this.ai.aimSpeed = this.barrels[0].bulletAccel;
+        this.inputs = this.ai.inputs;
+
+        if (this.ai.state === AIState.idle) {
+            const angle = this.positionData.values.angle + this.ai.passiveRotation;
+            const mag = Math.sqrt((this.inputs.mouse.x - this.positionData.values.x) ** 2 + (this.inputs.mouse.y - this.positionData.values.y) ** 2);
+            this.inputs.mouse.set({
+                x: this.positionData.values.x + Math.cos(angle) * mag,
+                y: this.positionData.values.y + Math.sin(angle) * mag
+            });
+        }
+
+        super.tick(tick);
+    }
+}
