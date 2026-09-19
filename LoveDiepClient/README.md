@@ -38,4 +38,4 @@ Click the green tank buttons to upgrade. Click the blue stat rows to spend point
 
 ## License
 
-AGPL-3.0, same protocol family as LuvitDiepEngine / diepcustom.
+AGPL-3.0, same protocol family as LuvitDiepEngine / diepcustom. See [`../LICENSE`](../LICENSE).

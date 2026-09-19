@@ -48,4 +48,4 @@ See `src/config.lua`. Useful environment variables:
 
 ## License
 
-AGPL-3.0, same as diepcustom. See `LICENSE`.
+AGPL-3.0, same as diepcustom. See [`../LICENSE`](../LICENSE).
