@@ -1,6 +1,6 @@
 # Luvit DiepCustom
 
-A [Luvit](https://luvit.io/) / LuaJIT port of [diepcustom](https://github.com/ABCxFF/diepcustom). It speaks the same diep.io WebSocket protocol as the Node.js reference in `ref/`.
+A [Luvit](https://luvit.io/) / LuaJIT port of [diepcustom](https://github.com/ABCxFF/diepcustom). It speaks the same diep.io WebSocket protocol.
 
 The intended frontend is **[LoveDiepClient](../LoveDiepClient)**, a LÖVE desktop client. This server no longer serves the diepcustom WASM / browser client.
 
