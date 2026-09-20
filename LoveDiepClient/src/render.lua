@@ -488,7 +488,7 @@ end)
 -- One camera: above the 2D view, looking straight down -Z. Projection, depth,
 -- facing, and lighting all use this position instead of separate hacks.
 local _angC, _angS = 1, 0
-local _ox, _oy = 0, 0
+local _ox, _oy, _oz = 0, 0, 0
 local _camX, _camY, _camZ, _focal = 0, 0, 900, 900
 local _depthBias = 0
 local DEPTH_FAR = 1 / 2800
@@ -547,16 +547,16 @@ local function syncCamera3D(viewH)
     _focal = _camZ
 end
 
-local function begin3D(angle, ox, oy)
+local function begin3D(angle, ox, oy, oz)
     angle = angle or 0
     _angC, _angS = math.cos(angle), math.sin(angle)
-    _ox, _oy = ox or 0, oy or 0
+    _ox, _oy, _oz = ox or 0, oy or 0, oz or 0
 end
 
 local function worldPoint(lx, ly, lz)
     local rx = lx * _angC - ly * _angS
     local ry = lx * _angS + ly * _angC
-    return _ox + rx, _oy + ry, lz or 0
+    return _ox + rx, _oy + ry, (lz or 0) + _oz
 end
 
 -- Direction from a world point to the camera.
@@ -642,35 +642,36 @@ local function convexHull(points)
     return lower
 end
 
--- Offset a convex hull by `amount` pixels so the stroke has constant width.
-local function outsetHull(hull, amount)
-    local n = #hull
-    if n < 3 or amount <= 0 then return hull end
-    local cx, cy = 0, 0
+local function signedArea(poly)
+    local n = #poly
+    local a = 0
     for i = 1, n do
-        cx = cx + hull[i][1]
-        cy = cy + hull[i][2]
+        local j = (i % n) + 1
+        a = a + poly[i][1] * poly[j][2] - poly[j][1] * poly[i][2]
     end
-    cx, cy = cx / n, cy / n
+    return a * 0.5
+end
+
+-- Offset a polygon by `amount` using winding so concave stars (traps) outset
+-- into the notches instead of wrapping a convex hull.
+local function outsetPoly(poly, amount)
+    local n = #poly
+    if n < 3 or amount <= 0 then return poly end
+    local sign = signedArea(poly) >= 0 and 1 or -1
     local out = {}
+    local maxM = amount * 3.5
     for i = 1, n do
-        local prev = hull[((i - 2) % n) + 1]
-        local cur = hull[i]
-        local nxt = hull[(i % n) + 1]
+        local prev = poly[((i - 2) % n) + 1]
+        local cur = poly[i]
+        local nxt = poly[(i % n) + 1]
         local e0x, e0y = cur[1] - prev[1], cur[2] - prev[2]
         local e1x, e1y = nxt[1] - cur[1], nxt[2] - cur[2]
         local l0 = math.sqrt(e0x * e0x + e0y * e0y)
         local l1 = math.sqrt(e1x * e1x + e1y * e1y)
         if l0 > 1e-8 then e0x, e0y = e0x / l0, e0y / l0 else e0x, e0y = 1, 0 end
         if l1 > 1e-8 then e1x, e1y = e1x / l1, e1y / l1 else e1x, e1y = 1, 0 end
-        local n0x, n0y = e0y, -e0x
-        if n0x * (cur[1] - cx) + n0y * (cur[2] - cy) < 0 then
-            n0x, n0y = -n0x, -n0y
-        end
-        local n1x, n1y = e1y, -e1x
-        if n1x * (cur[1] - cx) + n1y * (cur[2] - cy) < 0 then
-            n1x, n1y = -n1x, -n1y
-        end
+        local n0x, n0y = sign * e0y, -sign * e0x
+        local n1x, n1y = sign * e1y, -sign * e1x
         local bx, by = n0x + n1x, n0y + n1y
         local bl = math.sqrt(bx * bx + by * by)
         if bl < 1e-8 then
@@ -678,12 +679,36 @@ local function outsetHull(hull, amount)
         else
             bx, by = bx / bl, by / bl
             local d = bx * n0x + by * n0y
-            if d < 0.25 then d = 0.25 end
+            if d < 0.2 then d = 0.2 end
             local m = amount / d
+            if m > maxM then m = maxM end
             out[i] = { cur[1] + bx * m, cur[2] + by * m, cur[3] }
         end
     end
     return out
+end
+
+local function ptsConvex(pts)
+    local n = #pts / 2
+    if n < 4 then return true end
+    local prev = 0
+    for i = 1, n do
+        local pi = ((i - 2) % n) + 1
+        local ni = (i % n) + 1
+        local ax, ay = pts[pi * 2 - 1], pts[pi * 2]
+        local bx, by = pts[i * 2 - 1], pts[i * 2]
+        local cx, cy = pts[ni * 2 - 1], pts[ni * 2]
+        local cr = (bx - ax) * (cy - by) - (by - ay) * (cx - bx)
+        if cr * cr > 1e-10 then
+            local s = cr > 0 and 1 or -1
+            if prev == 0 then
+                prev = s
+            elseif s ~= prev then
+                return false
+            end
+        end
+    end
+    return true
 end
 
 local function meshReset()
@@ -764,26 +789,25 @@ end
 
 -- Outer silhouette ring. Depth sits at the back of this mesh so closer
 -- parts (barrels, other tanks) occlude it; width is fully outside the fill.
-local function strokeOutline(points, border, opacity, stroke)
-    local hull = convexHull(points)
-    if #hull < 3 then return end
+local function strokeLoop(loop, border, opacity, stroke)
+    if not loop or #loop < 3 then return end
     local w = math.max(tonumber(stroke) or 3, 0.8)
     local farZ = 0.001
-    for i = 1, #points do
-        local z = points[i][3]
+    for i = 1, #loop do
+        local z = loop[i][3]
         if z and z > farZ then farZ = z end
     end
     local z = math.min(0.999, farZ + 0.0002)
-    local outer = outsetHull(hull, w)
+    local outer = outsetPoly(loop, w)
     local r, g, b, a = hex(border, opacity)
     if Render._style == "shaded" then
         love.graphics.setDepthMode("lequal", true)
     end
     meshReset()
-    local n = #hull
+    local n = #loop
     for i = 1, n do
         local j = (i % n) + 1
-        local i0, i1 = hull[i], hull[j]
+        local i0, i1 = loop[i], loop[j]
         local o0, o1 = outer[i], outer[j]
         meshTri(
             i0[1], i0[2], z, r, g, b, a,
@@ -793,6 +817,83 @@ local function strokeOutline(points, border, opacity, stroke)
             i1[1], i1[2], z, r, g, b, a,
             o0[1], o0[2], z, r, g, b, a,
             o1[1], o1[2], z, r, g, b, a)
+    end
+    meshFlush()
+end
+
+local function strokeOutline(points, border, opacity, stroke)
+    strokeLoop(convexHull(points), border, opacity, stroke)
+end
+
+-- 3D bevel rim around a prism. Offset lives in object XY so side walls stay
+-- visible instead of getting covered by a flat top-face ring.
+local function strokePrism3D(pts, z0, z1, border, opacity, stroke)
+    local n = #pts / 2
+    if n < 3 then return end
+    local w = math.max(tonumber(stroke) or 3, 0.8)
+    local px, py = {}, {}
+    for i = 1, n do
+        px[i] = pts[i * 2 - 1]
+        py[i] = pts[i * 2]
+    end
+    local area = 0
+    for i = 1, n do
+        local j = (i % n) + 1
+        area = area + px[i] * py[j] - px[j] * py[i]
+    end
+    local sign = area >= 0 and 1 or -1
+    local nx, ny = {}, {}
+    for i = 1, n do
+        local j = (i % n) + 1
+        local dx, dy = px[j] - px[i], py[j] - py[i]
+        local len = math.sqrt(dx * dx + dy * dy)
+        if len > 1e-8 then
+            nx[i], ny[i] = sign * dy / len, -sign * dx / len
+        else
+            nx[i], ny[i] = 0, 0
+        end
+    end
+    local r, g, b, a = hex(border, opacity)
+    local function emit(ax, ay, az, bx, by, bz, cx, cy, cz)
+        local apx, apy, apz = proj(ax, ay, az)
+        local bpx, bpy, bpz = proj(bx, by, bz)
+        local cpx, cpy, cpz = proj(cx, cy, cz)
+        meshTri(
+            apx, apy, apz, r, g, b, a,
+            bpx, bpy, bpz, r, g, b, a,
+            cpx, cpy, cpz, r, g, b, a)
+    end
+    if Render._style == "shaded" then
+        love.graphics.setDepthMode("lequal", true)
+    end
+    meshReset()
+    for i = 1, n do
+        local j = (i % n) + 1
+        if nx[i] ~= 0 or ny[i] ~= 0 then
+            local x0, y0, x1, y1 = px[i], py[i], px[j], py[j]
+            local ox, oy = nx[i] * w, ny[i] * w
+            emit(x0, y0, z1, x0 + ox, y0 + oy, z1, x1, y1, z1)
+            emit(x1, y1, z1, x0 + ox, y0 + oy, z1, x1 + ox, y1 + oy, z1)
+            emit(x0, y0, z0, x1, y1, z0, x0 + ox, y0 + oy, z0)
+            emit(x1, y1, z0, x1 + ox, y1 + oy, z0, x0 + ox, y0 + oy, z0)
+            emit(x0 + ox, y0 + oy, z1, x0 + ox, y0 + oy, z0, x1 + ox, y1 + oy, z1)
+            emit(x1 + ox, y1 + oy, z1, x0 + ox, y0 + oy, z0, x1 + ox, y1 + oy, z0)
+        end
+    end
+    for i = 1, n do
+        local prev = ((i - 2) % n) + 1
+        if (nx[prev] ~= 0 or ny[prev] ~= 0) and (nx[i] ~= 0 or ny[i] ~= 0) then
+            local turn = nx[prev] * ny[i] - ny[prev] * nx[i]
+            if turn * sign > 1e-5 then
+                local x, y = px[i], py[i]
+                local ax, ay = nx[prev] * w, ny[prev] * w
+                local bx, by = nx[i] * w, ny[i] * w
+                emit(x, y, z1, x + ax, y + ay, z1, x + bx, y + by, z1)
+                emit(x, y, z0, x + bx, y + by, z0, x + ax, y + ay, z0)
+                emit(x + ax, y + ay, z1, x + ax, y + ay, z0, x + bx, y + by, z1)
+                emit(x + bx, y + by, z1, x + ax, y + ay, z0, x + bx, y + by, z0)
+            end
+        end
     end
     meshFlush()
 end
@@ -807,9 +908,9 @@ local function finishMesh(border, opacity, stroke, emit)
     end
 end
 
-local function drawSphere3D(radius, fill, border, opacity, stroke, angle, ox, oy)
+local function drawSphere3D(radius, fill, border, opacity, stroke, angle, ox, oy, oz)
     if not radius or radius < 0.35 or opacity < 0.02 then return end
-    begin3D(angle, ox, oy)
+    begin3D(angle, ox, oy, oz)
     local function emit()
         for st = SPHERE_STACKS - 1, 0, -1 do
             local outer, inner = sphereLat[st + 1], sphereLat[st]
@@ -862,14 +963,14 @@ local function drawCylinderCap(x, radius, yOff, zOff, nx, fill, opacity)
     end
 end
 
-local function drawCylinder3D(x0, x1, r0, r1, fill, border, opacity, stroke, yOff, angle, ox, oy, zOff)
+local function drawCylinder3D(x0, x1, r0, r1, fill, border, opacity, stroke, yOff, angle, ox, oy, zOff, oz)
     yOff = yOff or 0
     zOff = zOff or 0
     if opacity < 0.02 then return end
     r0 = math.max(0, r0 or 0)
     r1 = math.max(0, r1 or 0)
     if r0 < 0.25 and r1 < 0.25 then return end
-    begin3D(angle, ox, oy)
+    begin3D(angle, ox, oy, oz)
     local L = x1 - x0
     local sl = (r0 - r1) / math.max(math.abs(L), 1e-4)
     local den = math.sqrt(1 + sl * sl)
@@ -908,9 +1009,9 @@ local function drawCylinder3D(x0, x1, r0, r1, fill, border, opacity, stroke, yOf
     finishMesh(border, opacity, stroke, emit)
 end
 
-local function drawPrism3D(pts, height, fill, border, opacity, stroke, angle, ox, oy)
+local function drawPrism3D(pts, height, fill, border, opacity, stroke, angle, ox, oy, oz)
     if not pts or #pts < 6 or opacity < 0.02 then return end
-    begin3D(angle, ox, oy)
+    begin3D(angle, ox, oy, oz)
     local h = height or 0
     if h < 0 then h = 0 end
     local z0, z1 = -h * 0.5, h * 0.5
@@ -964,7 +1065,136 @@ local function drawPrism3D(pts, height, fill, border, opacity, stroke, angle, ox
             end
         end
     end
+    if ptsConvex(pts) then
+        finishMesh(border, opacity, stroke, emit)
+    else
+        finishMesh(border, opacity, 0, emit)
+        if stroke and stroke > 0.2 and opacity > 0.02 then
+            strokePrism3D(pts, z0, z1, border, opacity, stroke)
+        end
+    end
+end
+
+local function scalePts(pts, s)
+    local out = {}
+    for i = 1, #pts do
+        out[i] = pts[i] * s
+    end
+    return out
+end
+
+-- Thin ring (saw blade) for smasher guards. Outer walls plus a hole so the
+-- sphere reads through the middle.
+local function drawRingPrism3D(outer, inner, height, fill, border, opacity, stroke, angle, ox, oy, oz)
+    if not outer or not inner or #outer < 6 or #inner < 6 or opacity < 0.02 then return end
+    begin3D(angle, ox, oy, oz)
+    local h = height or 0
+    if h < 0 then h = 0 end
+    local z0, z1 = -h * 0.5, h * 0.5
+    local n = #outer / 2
+    local function emit()
+        if facing(0, 0, 1, 0, 0, z1) then
+            for i = 1, n do
+                local j = (i % n) + 1
+                local x0, y0 = outer[i * 2 - 1], outer[i * 2]
+                local x1, y1 = outer[j * 2 - 1], outer[j * 2]
+                local u0, v0 = inner[i * 2 - 1], inner[i * 2]
+                local u1, v1 = inner[j * 2 - 1], inner[j * 2]
+                meshLitTri(x0, y0, z1, 0, 0, 1, x1, y1, z1, 0, 0, 1, u0, v0, z1, 0, 0, 1, fill, opacity)
+                meshLitTri(x1, y1, z1, 0, 0, 1, u1, v1, z1, 0, 0, 1, u0, v0, z1, 0, 0, 1, fill, opacity)
+            end
+        end
+        if facing(0, 0, -1, 0, 0, z0) then
+            for i = 1, n do
+                local j = (i % n) + 1
+                local x0, y0 = outer[i * 2 - 1], outer[i * 2]
+                local x1, y1 = outer[j * 2 - 1], outer[j * 2]
+                local u0, v0 = inner[i * 2 - 1], inner[i * 2]
+                local u1, v1 = inner[j * 2 - 1], inner[j * 2]
+                meshLitTri(x0, y0, z0, 0, 0, -1, u0, v0, z0, 0, 0, -1, x1, y1, z0, 0, 0, -1, fill, opacity, nil, true)
+                meshLitTri(x1, y1, z0, 0, 0, -1, u0, v0, z0, 0, 0, -1, u1, v1, z0, 0, 0, -1, fill, opacity, nil, true)
+            end
+        end
+        for i = 1, n do
+            local j = (i % n) + 1
+            local x0, y0 = outer[i * 2 - 1], outer[i * 2]
+            local x1, y1 = outer[j * 2 - 1], outer[j * 2]
+            local dx, dy = x1 - x0, y1 - y0
+            local nx, ny = dy, -dx
+            if nx * (x0 + x1) + ny * (y0 + y1) < 0 then
+                nx, ny = -nx, -ny
+            end
+            nx, ny = nrm3(nx, ny, 0)
+            if facing(nx, ny, 0, (x0 + x1) * 0.5, (y0 + y1) * 0.5, 0) then
+                meshLitTri(x0, y0, z1, nx, ny, 0, x1, y1, z1, nx, ny, 0, x0, y0, z0, nx, ny, 0, fill, opacity)
+                meshLitTri(x1, y1, z1, nx, ny, 0, x1, y1, z0, nx, ny, 0, x0, y0, z0, nx, ny, 0, fill, opacity)
+            end
+        end
+        for i = 1, n do
+            local j = (i % n) + 1
+            local x0, y0 = inner[i * 2 - 1], inner[i * 2]
+            local x1, y1 = inner[j * 2 - 1], inner[j * 2]
+            local dx, dy = x1 - x0, y1 - y0
+            local nx, ny = -dy, dx
+            if nx * (x0 + x1) + ny * (y0 + y1) > 0 then
+                nx, ny = -nx, -ny
+            end
+            nx, ny = nrm3(nx, ny, 0)
+            if facing(nx, ny, 0, (x0 + x1) * 0.5, (y0 + y1) * 0.5, 0) then
+                meshLitTri(x0, y0, z1, nx, ny, 0, x0, y0, z0, nx, ny, 0, x1, y1, z1, nx, ny, 0, fill, opacity)
+                meshLitTri(x1, y1, z1, nx, ny, 0, x0, y0, z0, nx, ny, 0, x1, y1, z0, nx, ny, 0, fill, opacity)
+            end
+        end
+    end
     finishMesh(border, opacity, stroke, emit)
+end
+
+local function isSmasherGuard(e)
+    local phy = e and e.physics
+    local sty = e and e.style
+    if not phy or not sty then return false end
+    if (phy.sides or 0) < 3 then return false end
+    if flagged(sty, StyleFlags.isStar) then return false end
+    if (sty.color or 0) ~= 0 then return false end
+    local parent = e.parentEntity
+    if not parent or not parent.physics then return false end
+    return (parent.physics.sides or 0) == 1
+end
+
+local function smasherBladeHeight(size)
+    size = tonumber(size) or 0
+    return math.max(size * (0.16 + 0.10 * depthAmt()), 5)
+end
+
+local function smasherBladeZ(e)
+    local parent = e.parentEntity
+    if not parent then return 0 end
+    local n, idx = 0, 1
+    local kids = parent.children or {}
+    for i = 1, #kids do
+        local c = kids[i]
+        if isSmasherGuard(c) then
+            n = n + 1
+            if c == e then idx = n end
+        end
+    end
+    if n <= 1 then return 0 end
+    local spacing = smasherBladeHeight((e.physics and e.physics.size) or 20) * 1.2
+    return (idx - (n + 1) * 0.5) * spacing
+end
+
+local function mountedLift(e)
+    local parent = e.parentEntity
+    if not parent or not parent.physics then return 0 end
+    local psize = parent.physics.size or 0
+    local psides = parent.physics.sides or 0
+    if psides == 1 then
+        return math.max(psize - 4, psize * 0.72) * 0.95
+    end
+    if psides >= 3 then
+        return prismHeight(psize) * 0.5
+    end
+    return psize * 0.35
 end
 
 local function fillStroke(fill, border, opacity, stroke, drawFill, drawStroke)
@@ -1040,7 +1270,7 @@ local function shootRecoil(e)
     return rec, 2 * hl * (rec - 1), math.cos(dir) < 0, src == e
 end
 
-local function drawBody(e, opacity, hit, worldAngle, worldX, worldY)
+local function drawBody(e, opacity, hit, worldAngle, worldX, worldY, worldZ)
     local phy = e.physics
     local sty = e.style
     if not phy or not sty then return end
@@ -1055,13 +1285,13 @@ local function drawBody(e, opacity, hit, worldAngle, worldX, worldY)
     local trap = bit.band(phy.flags or 0, PhysicsFlags.isTrapezoid) ~= 0
     local stroke = math.max(pixel() * 2.5, math.min((sty.borderWidth or 7.5) * 0.78, size * 0.2))
     worldAngle = worldAngle or 0
-    worldX, worldY = worldX or 0, worldY or 0
+    worldX, worldY, worldZ = worldX or 0, worldY or 0, worldZ or 0
 
     if sides == 1 then
         -- Keep the outline inside physics.size so the fill doesn't balloon past barrels.
         local r = math.max(size - stroke * 0.5, size * 0.72)
         if Render._style == "shaded" then
-            drawSphere3D(r, fill, border, opacity, stroke, worldAngle, worldX, worldY)
+            drawSphere3D(r, fill, border, opacity, stroke, worldAngle, worldX, worldY, worldZ)
         else
             fillStroke(fill, border, opacity, stroke, function()
                 love.graphics.circle("fill", 0, 0, r)
@@ -1095,7 +1325,7 @@ local function drawBody(e, opacity, hit, worldAngle, worldX, worldY)
         if Render._style == "shaded" then
             -- Sit on the tank midplane so the lid wins depth and the barrel
             -- comes out the sides instead of through the top.
-            drawCylinder3D(inner, outer, hw, hw * tip, fill, border, opacity, stroke, 0, worldAngle, worldX, worldY, -hw * 0.35)
+            drawCylinder3D(inner, outer, hw, hw * tip, fill, border, opacity, stroke, 0, worldAngle, worldX, worldY, -hw * 0.35, worldZ)
         else
             local pts = chamferPoly({
                 inner, -hw,
@@ -1116,9 +1346,22 @@ local function drawBody(e, opacity, hit, worldAngle, worldX, worldY)
         local rad = size * math.sqrt(2)
         local pts = polyRegular(sides, rad, star)
         if Render._style == "shaded" then
+            if star then
+                pts = chamferPoly(pts, rad * 0.06)
+            end
             pts = insetPts(pts, stroke * 0.5, rad)
             if #pts >= 6 then
-                drawPrism3D(pts, prismHeight(size), fill, border, opacity, stroke, worldAngle, worldX, worldY)
+                if isSmasherGuard(e) then
+                    local bladeZ = worldZ + smasherBladeZ(e)
+                    local bladeH = smasherBladeHeight(size)
+                    if sides >= 6 then
+                        drawRingPrism3D(pts, scalePts(pts, 0.62), bladeH, fill, border, opacity, stroke, worldAngle, worldX, worldY, bladeZ)
+                    else
+                        drawPrism3D(pts, bladeH, fill, border, opacity, stroke, worldAngle, worldX, worldY, bladeZ)
+                    end
+                else
+                    drawPrism3D(pts, prismHeight(size), fill, border, opacity, stroke, worldAngle, worldX, worldY, worldZ)
+                end
             end
         else
             if star then
@@ -1234,7 +1477,7 @@ end
 
 local drawNode
 
-drawNode = function(e, parentAngle, parentOpacity, parentFlash, parentHit, parentWX, parentWY)
+drawNode = function(e, parentAngle, parentOpacity, parentFlash, parentHit, parentWX, parentWY, parentWZ)
     if e.camera or e.arena then return end
     if not e.physics and #(e.children or {}) == 0 then return end
     local lx, ly, la, flags = localPos(e)
@@ -1250,21 +1493,25 @@ drawNode = function(e, parentAngle, parentOpacity, parentFlash, parentHit, paren
     end
 
     if Render._style == "shaded" then
-        parentWX, parentWY = parentWX or 0, parentWY or 0
+        parentWX, parentWY, parentWZ = parentWX or 0, parentWY or 0, parentWZ or 0
         local c, s = math.cos(parentAngle), math.sin(parentAngle)
         local wx = parentWX + lx * c - ly * s
         local wy = parentWY + lx * s + ly * c
+        local wz = parentWZ
+        if flagged(e.style, StyleFlags.showsAboveParent) then
+            wz = wz + mountedLift(e)
+        end
         local below, above = splitChildren(e)
         local function kids(list)
             for i = 1, #list do
-                drawNode(list[i], worldAngle, opacity, flash, hit, wx, wy)
+                drawNode(list[i], worldAngle, opacity, flash, hit, wx, wy, wz)
             end
         end
         kids(below)
         love.graphics.push()
         love.graphics.translate(wx, wy)
         if e.physics then
-            drawBody(e, drawOp, hit, worldAngle, wx, wy)
+            drawBody(e, drawOp, hit, worldAngle, wx, wy, wz)
         end
         if e.physics and flagged(e.style, StyleFlags.isVisible) then
             love.graphics.setDepthMode("always", false)
@@ -1348,12 +1595,17 @@ end
 local SQRT1_2 = math.sqrt(0.5)
 local SQRT2 = math.sqrt(2)
 
-local function iconPoly(sides, rad, stroke, fill, alpha, angle)
+local function iconPoly(sides, rad, stroke, fill, alpha, angle, height, oz, ring)
     local pts = polyRegular(sides, rad, false)
     if Render._style == "shaded" then
         pts = insetPts(pts, stroke * 0.5, rad)
         if #pts >= 6 then
-            drawPrism3D(pts, prismHeight(rad * 0.70710678118), fill, strokeHex(fill), alpha, stroke, angle or 0)
+            local h = height or prismHeight(rad * 0.70710678118)
+            if ring then
+                drawRingPrism3D(pts, scalePts(pts, 0.62), h, fill, strokeHex(fill), alpha, stroke, angle or 0, 0, 0, oz)
+            else
+                drawPrism3D(pts, h, fill, strokeHex(fill), alpha, stroke, angle or 0, 0, 0, oz)
+            end
         end
         return
     end
@@ -1369,11 +1621,11 @@ local function iconPoly(sides, rad, stroke, fill, alpha, angle)
     end, rad * 0.72)
 end
 
-local function iconCircle(r, stroke, fill, alpha)
+local function iconCircle(r, stroke, fill, alpha, oz)
     local cr = r - stroke * 0.5
     if cr < r * 0.72 then cr = r * 0.72 end
     if Render._style == "shaded" then
-        drawSphere3D(cr, fill, strokeHex(fill), alpha, stroke)
+        drawSphere3D(cr, fill, strokeHex(fill), alpha, stroke, 0, 0, 0, oz)
         return
     end
     fillStroke(fill, strokeHex(fill), alpha, stroke, function()
@@ -1383,7 +1635,7 @@ local function iconCircle(r, stroke, fill, alpha)
     end, cr)
 end
 
-local function iconBarrel(size, width, ang, off, trap, trapDir, stroke, fill, alpha)
+local function iconBarrel(size, width, ang, off, trap, trapDir, stroke, fill, alpha, oz)
     local hw = width / 2
     local tip = 1
     if trap then
@@ -1391,7 +1643,7 @@ local function iconBarrel(size, width, ang, off, trap, trapDir, stroke, fill, al
         if tip < 0.2 then tip = 0.2 end
     end
     if Render._style == "shaded" then
-        drawCylinder3D(0, size, hw, hw * tip, fill, strokeHex(fill), alpha, stroke, off, ang)
+        drawCylinder3D(0, size, hw, hw * tip, fill, strokeHex(fill), alpha, stroke, off, ang, 0, 0, -hw * 0.35, oz)
         return
     end
     love.graphics.push()
@@ -1410,11 +1662,11 @@ local function iconBarrel(size, width, ang, off, trap, trapDir, stroke, fill, al
     love.graphics.pop()
 end
 
-local function iconGuard(sides, sizeRatio, offsetAngle, bodyR, stroke, alpha)
+local function iconGuard(sides, sizeRatio, offsetAngle, bodyR, stroke, alpha, oz)
     -- GuardObject multiplies sizeRatio by SQRT1_2; world polygons draw at size * sqrt(2).
     local rad = bodyR * sizeRatio * SQRT1_2 * SQRT2
     if Render._style == "shaded" then
-        iconPoly(sides, rad, stroke, 0x555555, alpha, offsetAngle or 0)
+        iconPoly(sides, rad, stroke, 0x555555, alpha, offsetAngle or 0, smasherBladeHeight(rad * 0.70710678118), oz, sides >= 6)
         return
     end
     love.graphics.push()
@@ -1423,13 +1675,13 @@ local function iconGuard(sides, sizeRatio, offsetAngle, bodyR, stroke, alpha)
     love.graphics.pop()
 end
 
-local function iconTurret(x, y, ang, stroke, alpha)
+local function iconTurret(x, y, ang, stroke, alpha, lift)
     local barrelFill = 0x999999
     love.graphics.push()
     love.graphics.translate(x, y)
     if Render._style == "shaded" then
-        iconBarrel(55, 42 * 0.7, ang or 0, 0, false, 0, stroke, barrelFill, alpha)
-        iconCircle(25, stroke, barrelFill, alpha)
+        iconBarrel(55, 42 * 0.7, ang or 0, 0, false, 0, stroke, barrelFill, alpha, lift)
+        iconCircle(25, stroke, barrelFill, alpha, lift)
     else
         love.graphics.rotate(ang or 0)
         iconBarrel(55, 42 * 0.7, 0, 0, false, 0, stroke, barrelFill, alpha)
@@ -1467,23 +1719,24 @@ local function iconAddon(id, layer, bodyR, stroke, alpha)
         return
     end
     if layer == "under" then
+        local bladeH = smasherBladeHeight(bodyR * 1.15 * SQRT1_2)
         if id == "smasher" or id == "autosmasher" then
             iconGuard(6, 1.15, 0, bodyR, stroke, alpha)
         elseif id == "landmine" then
-            iconGuard(6, 1.15, 0, bodyR, stroke, alpha)
-            iconGuard(6, 1.15, math.pi / 6, bodyR, stroke, alpha)
+            iconGuard(6, 1.15, 0, bodyR, stroke, alpha, -bladeH * 0.6)
+            iconGuard(6, 1.15, math.pi / 6, bodyR, stroke, alpha, bladeH * 0.6)
         elseif id == "spike" then
-            iconGuard(3, 1.3, 0, bodyR, stroke, alpha)
-            iconGuard(3, 1.3, math.pi / 3, bodyR, stroke, alpha)
-            iconGuard(3, 1.3, math.pi / 6, bodyR, stroke, alpha)
-            iconGuard(3, 1.3, math.pi / 2, bodyR, stroke, alpha)
+            iconGuard(3, 1.3, 0, bodyR, stroke, alpha, -bladeH * 1.5)
+            iconGuard(3, 1.3, math.pi / 3, bodyR, stroke, alpha, -bladeH * 0.5)
+            iconGuard(3, 1.3, math.pi / 6, bodyR, stroke, alpha, bladeH * 0.5)
+            iconGuard(3, 1.3, math.pi / 2, bodyR, stroke, alpha, bladeH * 1.5)
         elseif id == "weirdspike" then
-            iconGuard(3, 1.5, 0, bodyR, stroke, alpha)
-            iconGuard(3, 1.5, math.pi / 6, bodyR, stroke, alpha)
+            iconGuard(3, 1.5, 0, bodyR, stroke, alpha, -bladeH * 0.6)
+            iconGuard(3, 1.5, math.pi / 6, bodyR, stroke, alpha, bladeH * 0.6)
         elseif id == "spiesk" then
-            iconGuard(4, 1.3, 0, bodyR, stroke, alpha)
-            iconGuard(4, 1.3, math.pi / 6, bodyR, stroke, alpha)
-            iconGuard(4, 1.3, math.pi / 3, bodyR, stroke, alpha)
+            iconGuard(4, 1.3, 0, bodyR, stroke, alpha, -bladeH)
+            iconGuard(4, 1.3, math.pi / 6, bodyR, stroke, alpha, 0)
+            iconGuard(4, 1.3, math.pi / 3, bodyR, stroke, alpha, bladeH)
         elseif id == "pronounced" then
             iconBarrel(bodyR, 42 / 50 * bodyR, math.pi, 0, true, math.pi, stroke, barrelFill, alpha)
         elseif id == "dompronounced" then
@@ -1492,7 +1745,7 @@ local function iconAddon(id, layer, bodyR, stroke, alpha)
         return
     end
     if id == "autoturret" or id == "autosmasher" then
-        iconTurret(0, 0, 0, stroke, alpha)
+        iconTurret(0, 0, 0, stroke, alpha, bodyR * 0.9)
     elseif id == "auto2" or id == "auto3" or id == "auto5" or id == "auto7" then
         local n = tonumber(id:sub(5)) or 3
         for i = 0, n - 1 do
