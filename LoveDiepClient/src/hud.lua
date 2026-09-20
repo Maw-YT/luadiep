@@ -798,28 +798,28 @@ local function drawHome(game, buttons, sw, sh, markHover, hoverScaleFn)
         roundrect(x, y, w, 32, 6)
         love.graphics.setColor(0.1, 0.1, 0.12, a)
         local raw = tostring(game[key] or "")
-        local value = raw
-        if key == "password" then
-            value = string.rep("•", #raw)
-        end
         local pos = game.caret or #raw
         if pos < 0 then pos = 0 elseif pos > #raw then pos = #raw end
         local emptyHint = (key == "url" and raw == "" and not on)
+        local value
         if emptyHint then
             love.graphics.setColor(0.45, 0.48, 0.52, a)
             value = "127.0.0.1:8080"
+        elseif key == "password" then
+            local mark = (on and love.timer.getTime() % 1 < 0.5) and "|" or ""
+            value = string.rep("*", pos) .. (on and mark or "") .. string.rep("*", #raw - pos)
         elseif on then
             local mark = (love.timer.getTime() % 1 < 0.5) and "|" or ""
-            value = txt(value:sub(1, pos)) .. mark .. txt(value:sub(pos + 1))
+            value = txt(raw:sub(1, pos)) .. mark .. txt(raw:sub(pos + 1))
         else
-            value = txt(value)
+            value = txt(raw)
         end
         local pad = 10
         local inner = w - pad * 2
         local font = love.graphics.getFont()
         local ox = 0
         if font and not emptyHint then
-            local prefix = on and txt((key == "password" and string.rep("•", pos) or raw:sub(1, pos))) or value
+            local prefix = on and (key == "password" and string.rep("*", pos) or txt(raw:sub(1, pos))) or value
             local prefixW = font:getWidth(prefix)
             if prefixW > inner - 8 then
                 ox = (inner - 8) - prefixW
@@ -974,7 +974,7 @@ local function drawOptions(game, buttons, sw, sh, markHover, hoverScaleFn)
     if style == "old" then
         label = "Old"
     elseif style == "shaded" then
-        label = "Shaded"
+        label = "3D"
     end
     local bx, by, bw, bh = px + 36, py + 104, pw - 72, 44
     markHover("style", bx, by, bw, bh)
@@ -1049,7 +1049,7 @@ local function drawOptions(game, buttons, sw, sh, markHover, hoverScaleFn)
     end)
 
     love.graphics.setColor(0.72, 0.78, 0.86, 0.9)
-    Render.print("Inner Shadow", px + 36, py + 258)
+    Render.print("3D Depth", px + 36, py + 258)
     local st, shadowVal = Settings.innerShadowT()
     local spct = string.format("%d%%", math.floor(shadowVal * 100 + 0.5))
     love.graphics.setColor(0.85, 0.90, 0.96, 0.95)
@@ -1109,7 +1109,7 @@ local function drawOptions(game, buttons, sw, sh, markHover, hoverScaleFn)
     if game.styleMenuOpen then
         local opts = {
             { id = "new", label = "New (default)" },
-            { id = "shaded", label = "Shaded" },
+            { id = "shaded", label = "3D" },
             { id = "old", label = "Old" }
         }
         local dropY = by + bh + 6

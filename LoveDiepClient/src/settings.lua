@@ -4,8 +4,19 @@ local Settings = {
     style = "new",
     hudScale = 1,
     innerShadow = 0.15,
-    showFps = false
+    showFps = false,
+    devPassword = ""
 }
+
+local function jsonEscape(s)
+    s = tostring(s or "")
+    s = s:gsub("\\", "\\\\")
+    s = s:gsub('"', '\\"')
+    s = s:gsub("\n", "\\n")
+    s = s:gsub("\r", "\\r")
+    s = s:gsub("\t", "\\t")
+    return s
+end
 
 local HUD_MIN, HUD_MAX, HUD_STEP = 0.70, 1.50, 0.05
 local SHADOW_MIN, SHADOW_MAX, SHADOW_STEP = 0, 1, 0.01
@@ -50,6 +61,9 @@ function Settings.load()
             if data.showFps ~= nil then
                 Settings.showFps = data.showFps == true
             end
+            if type(data.devPassword) == "string" then
+                Settings.devPassword = data.devPassword:sub(1, 48)
+            end
         end
     end
     return Settings
@@ -68,10 +82,15 @@ function Settings.save()
     love.filesystem.write(
         "settings.json",
         string.format(
-            '{"style":"%s","hudScale":%.2f,"innerShadow":%.2f,"showFps":%s}',
-            style, scale, shadow, fps
+            '{"style":"%s","hudScale":%.2f,"innerShadow":%.2f,"showFps":%s,"devPassword":"%s"}',
+            style, scale, shadow, fps, jsonEscape(Settings.devPassword or "")
         )
     )
+end
+
+function Settings.setDevPassword(password)
+    Settings.devPassword = tostring(password or ""):sub(1, 48)
+    Settings.save()
 end
 
 function Settings.setStyle(style)

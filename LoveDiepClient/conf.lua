@@ -10,6 +10,7 @@ function love.conf(t)
     t.window.resizable = true
     t.window.vsync = 0
     t.window.msaa = 2
+    t.window.depth = 24
     t.modules.joystick = false
     t.modules.physics = false
     t.modules.video = false

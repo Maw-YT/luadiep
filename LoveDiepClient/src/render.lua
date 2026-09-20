@@ -444,38 +444,534 @@ local function localLight()
     return dx * LIGHT_X + dy * LIGHT_Y, -dy * LIGHT_X + dx * LIGHT_Y
 end
 
--- Inset indent: a smaller copy of the same silhouette, so the shade is a rim
--- that warps around circles, corners, and barrels instead of a flat crescent.
-local function paintInnerShadow(fill, opacity, drawFill, size)
-    if Render._style ~= "shaded" or not size or size < 1.4 or opacity < 0.05 then
-        return
-    end
-    local cover = Render._innerShadow or 0.15
-    if cover <= 0.001 then return end
-    if cover > 1 then cover = 1 end
-    local inner = 1 - cover
-    if inner < 0.02 then inner = 0.02 end
-    local lx, ly = localLight()
-    local shift = size * cover * 0.45
-    love.graphics.stencil(drawFill, "replace", 1)
-    love.graphics.setStencilTest("equal", 1)
-    love.graphics.setColor(0, 0, 0, opacity * 0.32)
-    drawFill()
-    love.graphics.setColor(hex(fill, opacity))
-    love.graphics.push()
-    love.graphics.translate(lx * shift, ly * shift)
-    love.graphics.scale(inner, inner)
-    drawFill()
-    love.graphics.pop()
-    love.graphics.setStencilTest()
+local function depthAmt()
+    local c = Render._innerShadow or 0.15
+    if c ~= c or c < 0 then c = 0 elseif c > 1 then c = 1 end
+    return c
 end
 
-local function fillStroke(fill, border, opacity, stroke, drawFill, drawStroke, shadeSize)
+local function prismHeight(size)
+    size = tonumber(size) or 0
+    if size < 0 then size = 0 end
+    return size * (0.88 + 0.70 * depthAmt())
+end
+
+-- Full unit sphere. phi=0 is the +Z pole (toward the light).
+local SPHERE_SLICES, SPHERE_STACKS = 16, 10
+local sphereLat = {}
+for st = 0, SPHERE_STACKS do
+    local phi = st / SPHERE_STACKS * math.pi
+    local sp, cp = math.sin(phi), math.cos(phi)
+    local ring = {}
+    for i = 0, SPHERE_SLICES do
+        local th = i / SPHERE_SLICES * math.pi * 2
+        ring[i] = { sp * math.cos(th), sp * math.sin(th), cp }
+    end
+    sphereLat[st] = ring
+end
+
+-- Circumference samples: {ny, nz} with theta=0 on +Z.
+local CYL_SEGS = 20
+local cylRing = {}
+for i = 0, CYL_SEGS do
+    local t = i / CYL_SEGS * math.pi * 2
+    cylRing[i] = { math.sin(t), math.cos(t) }
+end
+local cylOrder = {}
+for i = 0, CYL_SEGS - 1 do
+    cylOrder[#cylOrder + 1] = i
+end
+table.sort(cylOrder, function(a, b)
+    return (cylRing[a][2] + cylRing[a + 1][2]) < (cylRing[b][2] + cylRing[b + 1][2])
+end)
+
+-- One camera: above the 2D view, looking straight down -Z. Projection, depth,
+-- facing, and lighting all use this position instead of separate hacks.
+local _angC, _angS = 1, 0
+local _ox, _oy = 0, 0
+local _camX, _camY, _camZ, _focal = 0, 0, 900, 900
+local _depthBias = 0
+local DEPTH_FAR = 1 / 2800
+local CEL_THRESH, CEL_SHADOW = 0.12, 0.82
+local _lx, _ly, _lz = LIGHT_X, LIGHT_Y, 0.74
+do
+    local len = math.sqrt(_lx * _lx + _ly * _ly + _lz * _lz)
+    _lx, _ly, _lz = _lx / len, _ly / len, _lz / len
+end
+local triMesh, meshVerts, meshN = nil, {}, 0
+local MESH_FORMAT = {
+    { "VertexPosition", "float", 3 },
+    { "VertexColor", "byte", 4 },
+    { "VertexTexCoord", "float", 2 }
+}
+local depthShader
+do
+    local src = [[
+        varying float vDepth;
+        varying float vNd;
+        #ifdef VERTEX
+        vec4 position(mat4 transform_projection, vec4 vertex_position) {
+            vDepth = vertex_position.z;
+            vNd = VertexTexCoord.x;
+            return transform_projection * vec4(vertex_position.xy, 0.0, 1.0);
+        }
+        #endif
+        #ifdef PIXEL
+        vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) {
+            gl_FragDepth = vDepth;
+            float t = 1.0;
+            if (vNd < 1.5) {
+                if (vNd > 0.12) {
+                    t = 1.0;
+                } else {
+                    t = 0.82;
+                }
+            }
+            return vec4(color.rgb * t, color.a);
+        }
+        #endif
+    ]]
+    local ok, sh = pcall(love.graphics.newShader, src)
+    if ok then
+        depthShader = sh
+    else
+        print("[LoveDiepClient] 3D depth shader: " .. tostring(sh))
+    end
+end
+
+local function syncCamera3D(viewH)
+    _camX = Render._camX or 0
+    _camY = Render._camY or 0
+    viewH = viewH or (1080 / math.max(Render._fov or 0.35, 0.05))
+    _camZ = math.max(viewH * 0.72, 420)
+    _focal = _camZ
+end
+
+local function begin3D(angle, ox, oy)
+    angle = angle or 0
+    _angC, _angS = math.cos(angle), math.sin(angle)
+    _ox, _oy = ox or 0, oy or 0
+end
+
+local function worldPoint(lx, ly, lz)
+    local rx = lx * _angC - ly * _angS
+    local ry = lx * _angS + ly * _angC
+    return _ox + rx, _oy + ry, lz or 0
+end
+
+-- Direction from a world point to the camera.
+local function toCam(wx, wy, wz)
+    local dx = _camX - wx
+    local dy = _camY - wy
+    local dz = _camZ - wz
+    local len = math.sqrt(dx * dx + dy * dy + dz * dz)
+    if not len or len < 1e-8 then return 0, 0, 1 end
+    return dx / len, dy / len, dz / len
+end
+
+-- Perspective about the real camera. The z=0 plane keeps gameplay XY.
+local function proj(lx, ly, lz)
+    local wx, wy, wz = worldPoint(lx, ly, lz)
+    local dz = _camZ - wz
+    if dz < 12 then dz = 12 end
+    local f = _focal / dz
+    local sx = _camX + (wx - _camX) * f - _ox
+    local sy = _camY + (wy - _camY) * f - _oy
+    local depth = dz * DEPTH_FAR + _depthBias
+    if depth < 0.001 then depth = 0.001 elseif depth > 0.999 then depth = 0.999 end
+    return sx, sy, depth
+end
+
+-- Front face = normal points toward the camera from this point.
+local function facing(nx, ny, nz, px, py, pz)
+    local nwx = nx * _angC - ny * _angS
+    local nwy = nx * _angS + ny * _angC
+    local wx, wy, wz = worldPoint(px or 0, py or 0, pz or 0)
+    local cx, cy, cz = toCam(wx, wy, wz)
+    return nwx * cx + nwy * cy + nz * cz > 0.02
+end
+
+local function nrm3(x, y, z)
+    local l = math.sqrt(x * x + y * y + z * z)
+    if not l or l < 1e-8 then return 0, 0, 1 end
+    return x / l, y / l, z / l
+end
+
+local function litCol(fill, nx, ny, nz, opacity)
+    local nwx = nx * _angC - ny * _angS
+    local nwy = nx * _angS + ny * _angC
+    local nd = nwx * _lx + nwy * _ly + nz * _lz
+    local r, g, b = hex(fill)
+    if not depthShader then
+        local t = nd > CEL_THRESH and 1 or CEL_SHADOW
+        return r * t, g * t, b * t, opacity, 2
+    end
+    return r, g, b, opacity, nd
+end
+
+local function hullCross(o, a, b)
+    return (a[1] - o[1]) * (b[2] - o[2]) - (a[2] - o[2]) * (b[1] - o[1])
+end
+
+local function convexHull(points)
+    local n = #points
+    if n <= 2 then return points end
+    table.sort(points, function(a, b)
+        if a[1] == b[1] then return a[2] < b[2] end
+        return a[1] < b[1]
+    end)
+    local lower = {}
+    for i = 1, n do
+        while #lower >= 2 and hullCross(lower[#lower - 1], lower[#lower], points[i]) <= 0 do
+            lower[#lower] = nil
+        end
+        lower[#lower + 1] = points[i]
+    end
+    local upper = {}
+    for i = n, 1, -1 do
+        while #upper >= 2 and hullCross(upper[#upper - 1], upper[#upper], points[i]) <= 0 do
+            upper[#upper] = nil
+        end
+        upper[#upper + 1] = points[i]
+    end
+    lower[#lower] = nil
+    upper[#upper] = nil
+    for i = 1, #upper do
+        lower[#lower + 1] = upper[i]
+    end
+    return lower
+end
+
+-- Offset a convex hull by `amount` pixels so the stroke has constant width.
+local function outsetHull(hull, amount)
+    local n = #hull
+    if n < 3 or amount <= 0 then return hull end
+    local cx, cy = 0, 0
+    for i = 1, n do
+        cx = cx + hull[i][1]
+        cy = cy + hull[i][2]
+    end
+    cx, cy = cx / n, cy / n
+    local out = {}
+    for i = 1, n do
+        local prev = hull[((i - 2) % n) + 1]
+        local cur = hull[i]
+        local nxt = hull[(i % n) + 1]
+        local e0x, e0y = cur[1] - prev[1], cur[2] - prev[2]
+        local e1x, e1y = nxt[1] - cur[1], nxt[2] - cur[2]
+        local l0 = math.sqrt(e0x * e0x + e0y * e0y)
+        local l1 = math.sqrt(e1x * e1x + e1y * e1y)
+        if l0 > 1e-8 then e0x, e0y = e0x / l0, e0y / l0 else e0x, e0y = 1, 0 end
+        if l1 > 1e-8 then e1x, e1y = e1x / l1, e1y / l1 else e1x, e1y = 1, 0 end
+        local n0x, n0y = e0y, -e0x
+        if n0x * (cur[1] - cx) + n0y * (cur[2] - cy) < 0 then
+            n0x, n0y = -n0x, -n0y
+        end
+        local n1x, n1y = e1y, -e1x
+        if n1x * (cur[1] - cx) + n1y * (cur[2] - cy) < 0 then
+            n1x, n1y = -n1x, -n1y
+        end
+        local bx, by = n0x + n1x, n0y + n1y
+        local bl = math.sqrt(bx * bx + by * by)
+        if bl < 1e-8 then
+            out[i] = { cur[1] + n0x * amount, cur[2] + n0y * amount, cur[3] }
+        else
+            bx, by = bx / bl, by / bl
+            local d = bx * n0x + by * n0y
+            if d < 0.25 then d = 0.25 end
+            local m = amount / d
+            out[i] = { cur[1] + bx * m, cur[2] + by * m, cur[3] }
+        end
+    end
+    return out
+end
+
+local function meshReset()
+    meshN = 0
+end
+
+local function meshPush(x, y, z, r, g, b, a, nd)
+    meshN = meshN + 1
+    local v = meshVerts[meshN]
+    nd = nd or 2
+    if v then
+        v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9] = x, y, z, r, g, b, a, nd, 0
+    else
+        meshVerts[meshN] = { x, y, z, r, g, b, a, nd, 0 }
+    end
+end
+
+local function meshTri(x1, y1, z1, r1, g1, b1, a1, x2, y2, z2, r2, g2, b2, a2, x3, y3, z3, r3, g3, b3, a3, n1, n2, n3)
+    meshPush(x1, y1, z1, r1, g1, b1, a1, n1)
+    meshPush(x2, y2, z2, r2, g2, b2, a2, n2)
+    meshPush(x3, y3, z3, r3, g3, b3, a3, n3)
+end
+
+local function meshFlush()
+    if meshN < 3 then
+        meshN = 0
+        return
+    end
+    if not triMesh or triMesh:getVertexCount() < meshN then
+        triMesh = love.graphics.newMesh(MESH_FORMAT, math.max(meshN, 1024), "triangles", "stream")
+    end
+    for i = 1, meshN do
+        triMesh:setVertex(i, meshVerts[i])
+    end
+    triMesh:setDrawRange(1, meshN)
+    local prev
+    if depthShader then
+        prev = love.graphics.getShader()
+        love.graphics.setShader(depthShader)
+    end
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.draw(triMesh)
+    if depthShader then
+        if prev then
+            love.graphics.setShader(prev)
+        else
+            love.graphics.setShader()
+        end
+    end
+    meshN = 0
+end
+
+local hullPts = {}
+
+local function hullReset()
+    hullPts = {}
+end
+
+local function hullAdd(x, y, z)
+    hullPts[#hullPts + 1] = { x, y, z or 0.5 }
+end
+
+local function meshLitTri(ax, ay, az, anx, any, anz,
+                          bx, by, bz, bnx, bny, bnz,
+                          cx, cy, cz, cnx, cny, cnz,
+                          fill, opacity, specPow, wrap)
+    local axp, ayp, azp = proj(ax, ay, az)
+    local bxp, byp, bzp = proj(bx, by, bz)
+    local cxp, cyp, czp = proj(cx, cy, cz)
+    hullAdd(axp, ayp, azp)
+    hullAdd(bxp, byp, bzp)
+    hullAdd(cxp, cyp, czp)
+    local ar, ag, ab, aa, na = litCol(fill, anx, any, anz, opacity)
+    local br, bg, bb, ba, nb = litCol(fill, bnx, bny, bnz, opacity)
+    local cr, cg, cb, ca, nc = litCol(fill, cnx, cny, cnz, opacity)
+    meshTri(axp, ayp, azp, ar, ag, ab, aa, bxp, byp, bzp, br, bg, bb, ba, cxp, cyp, czp, cr, cg, cb, ca, na, nb, nc)
+end
+
+-- Outer silhouette ring. Depth sits at the back of this mesh so closer
+-- parts (barrels, other tanks) occlude it; width is fully outside the fill.
+local function strokeOutline(points, border, opacity, stroke)
+    local hull = convexHull(points)
+    if #hull < 3 then return end
+    local w = math.max(tonumber(stroke) or 3, 0.8)
+    local farZ = 0.001
+    for i = 1, #points do
+        local z = points[i][3]
+        if z and z > farZ then farZ = z end
+    end
+    local z = math.min(0.999, farZ + 0.0002)
+    local outer = outsetHull(hull, w)
+    local r, g, b, a = hex(border, opacity)
+    if Render._style == "shaded" then
+        love.graphics.setDepthMode("lequal", true)
+    end
+    meshReset()
+    local n = #hull
+    for i = 1, n do
+        local j = (i % n) + 1
+        local i0, i1 = hull[i], hull[j]
+        local o0, o1 = outer[i], outer[j]
+        meshTri(
+            i0[1], i0[2], z, r, g, b, a,
+            o0[1], o0[2], z, r, g, b, a,
+            i1[1], i1[2], z, r, g, b, a)
+        meshTri(
+            i1[1], i1[2], z, r, g, b, a,
+            o0[1], o0[2], z, r, g, b, a,
+            o1[1], o1[2], z, r, g, b, a)
+    end
+    meshFlush()
+end
+
+local function finishMesh(border, opacity, stroke, emit)
+    hullReset()
+    meshReset()
+    emit()
+    meshFlush()
+    if stroke and stroke > 0.2 and opacity > 0.02 then
+        strokeOutline(hullPts, border, opacity, stroke)
+    end
+end
+
+local function drawSphere3D(radius, fill, border, opacity, stroke, angle, ox, oy)
+    if not radius or radius < 0.35 or opacity < 0.02 then return end
+    begin3D(angle, ox, oy)
+    local function emit()
+        for st = SPHERE_STACKS - 1, 0, -1 do
+            local outer, inner = sphereLat[st + 1], sphereLat[st]
+            for i = 0, SPHERE_SLICES - 1 do
+                local a, b = outer[i], outer[i + 1]
+                local c, d = inner[i], inner[i + 1]
+                if facing(a[1], a[2], a[3], a[1] * radius, a[2] * radius, a[3] * radius)
+                    or facing(c[1], c[2], c[3], c[1] * radius, c[2] * radius, c[3] * radius) then
+                    if st == SPHERE_STACKS - 1 then
+                        meshLitTri(
+                            c[1] * radius, c[2] * radius, c[3] * radius, c[1], c[2], c[3],
+                            d[1] * radius, d[2] * radius, d[3] * radius, d[1], d[2], d[3],
+                            a[1] * radius, a[2] * radius, a[3] * radius, a[1], a[2], a[3],
+                            fill, opacity, 22)
+                    elseif st == 0 then
+                        meshLitTri(
+                            a[1] * radius, a[2] * radius, a[3] * radius, a[1], a[2], a[3],
+                            b[1] * radius, b[2] * radius, b[3] * radius, b[1], b[2], b[3],
+                            c[1] * radius, c[2] * radius, c[3] * radius, c[1], c[2], c[3],
+                            fill, opacity, 22)
+                    else
+                        meshLitTri(
+                            a[1] * radius, a[2] * radius, a[3] * radius, a[1], a[2], a[3],
+                            b[1] * radius, b[2] * radius, b[3] * radius, b[1], b[2], b[3],
+                            c[1] * radius, c[2] * radius, c[3] * radius, c[1], c[2], c[3],
+                            fill, opacity, 22)
+                        meshLitTri(
+                            b[1] * radius, b[2] * radius, b[3] * radius, b[1], b[2], b[3],
+                            d[1] * radius, d[2] * radius, d[3] * radius, d[1], d[2], d[3],
+                            c[1] * radius, c[2] * radius, c[3] * radius, c[1], c[2], c[3],
+                            fill, opacity, 22)
+                    end
+                end
+            end
+        end
+    end
+    finishMesh(border, opacity, stroke, emit)
+end
+
+local function drawCylinderCap(x, radius, yOff, zOff, nx, fill, opacity)
+    if radius < 0.25 then return end
+    zOff = zOff or 0
+    for i = 0, CYL_SEGS - 1 do
+        local a, b = cylRing[i], cylRing[i + 1]
+        meshLitTri(
+            x, yOff, zOff, nx, 0, 0,
+            x, yOff + a[1] * radius, zOff + a[2] * radius, nx, 0, 0,
+            x, yOff + b[1] * radius, zOff + b[2] * radius, nx, 0, 0,
+            fill, opacity, 16, true)
+    end
+end
+
+local function drawCylinder3D(x0, x1, r0, r1, fill, border, opacity, stroke, yOff, angle, ox, oy, zOff)
+    yOff = yOff or 0
+    zOff = zOff or 0
+    if opacity < 0.02 then return end
+    r0 = math.max(0, r0 or 0)
+    r1 = math.max(0, r1 or 0)
+    if r0 < 0.25 and r1 < 0.25 then return end
+    begin3D(angle, ox, oy)
+    local L = x1 - x0
+    local sl = (r0 - r1) / math.max(math.abs(L), 1e-4)
+    local den = math.sqrt(1 + sl * sl)
+    local nxx = sl / den
+    local nScale = 1 / den
+    local innerN = x1 >= x0 and -1 or 1
+    local function emit()
+        if facing(innerN, 0, 0, x0, yOff, zOff) then
+            drawCylinderCap(x0, r0, yOff, zOff, innerN, fill, opacity)
+        end
+        for o = 1, #cylOrder do
+            local i = cylOrder[o]
+            local a, b = cylRing[i], cylRing[i + 1]
+            local n0y, n0z = a[1] * nScale, a[2] * nScale
+            local n1y, n1z = b[1] * nScale, b[2] * nScale
+            local mx = (x0 + x1) * 0.5
+            local my = yOff + (a[1] + b[1]) * 0.25 * (r0 + r1)
+            local mz = zOff + (a[2] + b[2]) * 0.25 * (r0 + r1)
+            if facing(nxx, n0y, n0z, mx, my, mz) or facing(nxx, n1y, n1z, mx, my, mz) then
+                meshLitTri(
+                    x0, yOff + a[1] * r0, zOff + a[2] * r0, nxx, n0y, n0z,
+                    x1, yOff + a[1] * r1, zOff + a[2] * r1, nxx, n0y, n0z,
+                    x0, yOff + b[1] * r0, zOff + b[2] * r0, nxx, n1y, n1z,
+                    fill, opacity, 16)
+                meshLitTri(
+                    x1, yOff + a[1] * r1, zOff + a[2] * r1, nxx, n0y, n0z,
+                    x1, yOff + b[1] * r1, zOff + b[2] * r1, nxx, n1y, n1z,
+                    x0, yOff + b[1] * r0, zOff + b[2] * r0, nxx, n1y, n1z,
+                    fill, opacity, 16)
+            end
+        end
+        if facing(-innerN, 0, 0, x1, yOff, zOff) then
+            drawCylinderCap(x1, r1, yOff, zOff, -innerN, fill, opacity)
+        end
+    end
+    finishMesh(border, opacity, stroke, emit)
+end
+
+local function drawPrism3D(pts, height, fill, border, opacity, stroke, angle, ox, oy)
+    if not pts or #pts < 6 or opacity < 0.02 then return end
+    begin3D(angle, ox, oy)
+    local h = height or 0
+    if h < 0 then h = 0 end
+    local z0, z1 = -h * 0.5, h * 0.5
+    local n = #pts / 2
+    local function emit()
+        if facing(0, 0, 1, 0, 0, z1) then
+            for i = 1, n do
+                local j = (i % n) + 1
+                local x0, y0 = pts[i * 2 - 1], pts[i * 2]
+                local x1, y1 = pts[j * 2 - 1], pts[j * 2]
+                meshLitTri(
+                    0, 0, z1, 0, 0, 1,
+                    x0, y0, z1, 0, 0, 1,
+                    x1, y1, z1, 0, 0, 1,
+                    fill, opacity)
+            end
+        end
+        if facing(0, 0, -1, 0, 0, z0) then
+            for i = 1, n do
+                local j = (i % n) + 1
+                local x0, y0 = pts[i * 2 - 1], pts[i * 2]
+                local x1, y1 = pts[j * 2 - 1], pts[j * 2]
+                meshLitTri(
+                    0, 0, z0, 0, 0, -1,
+                    x1, y1, z0, 0, 0, -1,
+                    x0, y0, z0, 0, 0, -1,
+                    fill, opacity, nil, true)
+            end
+        end
+        for i = 1, n do
+            local j = (i % n) + 1
+            local x0, y0 = pts[i * 2 - 1], pts[i * 2]
+            local x1, y1 = pts[j * 2 - 1], pts[j * 2]
+            local dx, dy = x1 - x0, y1 - y0
+            local nx, ny = dy, -dx
+            if nx * (x0 + x1) + ny * (y0 + y1) < 0 then
+                nx, ny = -nx, -ny
+            end
+            nx, ny = nrm3(nx, ny, 0)
+            if facing(nx, ny, 0, (x0 + x1) * 0.5, (y0 + y1) * 0.5, 0) then
+                meshLitTri(
+                    x0, y0, z1, nx, ny, 0,
+                    x1, y1, z1, nx, ny, 0,
+                    x0, y0, z0, nx, ny, 0,
+                    fill, opacity)
+                meshLitTri(
+                    x1, y1, z1, nx, ny, 0,
+                    x1, y1, z0, nx, ny, 0,
+                    x0, y0, z0, nx, ny, 0,
+                    fill, opacity)
+            end
+        end
+    end
+    finishMesh(border, opacity, stroke, emit)
+end
+
+local function fillStroke(fill, border, opacity, stroke, drawFill, drawStroke)
     love.graphics.setLineStyle("smooth")
     love.graphics.setLineJoin(Render._style == "old" and "miter" or "bevel")
     love.graphics.setColor(hex(fill, opacity))
     drawFill()
-    paintInnerShadow(fill, opacity, drawFill, shadeSize)
     love.graphics.setColor(hex(border, opacity))
     love.graphics.setLineWidth(stroke)
     drawStroke()
@@ -514,18 +1010,37 @@ local function strokePoly(pts)
     end
 end
 
--- Keep the barrel base on the tank; returns (lengthScale, muzzleShiftX).
+-- Shot kick on a barrel, or on a trapoid / launcher parented to one.
+-- flip: trapezoidDirection ≈ π, so local +X faces the tank.
 local function shootRecoil(e)
-    if not e.barrel then return 1, 0 end
-    local t = e._shootAnim
+    local src = e
+    if not (src and src.barrel) and e then
+        if e.parentEntity and e.parentEntity.barrel then
+            src = e.parentEntity
+        else
+            local kids = e.parentEntity and e.parentEntity.children
+            if kids then
+                for i = 1, #kids do
+                    local k = kids[i]
+                    if k ~= e and k.barrel then
+                        src = k
+                        break
+                    end
+                end
+            end
+        end
+    end
+    if not (src and src.barrel) then return 1, 0, false, false end
+    local t = src._shootAnim
     if t == nil then t = 1 end
     if t < 0 then t = 0 elseif t > 1 then t = 1 end
     local rec = 0.82 + 0.18 * (t * t * (3 - 2 * t))
-    local hl = ((e.physics and e.physics.size) or 0) / 2
-    return rec, 2 * hl * (rec - 1)
+    local hl = ((src.physics and src.physics.size) or 0) / 2
+    local dir = src.barrel.trapezoidDirection or 0
+    return rec, 2 * hl * (rec - 1), math.cos(dir) < 0, src == e
 end
 
-local function drawBody(e, opacity, hit)
+local function drawBody(e, opacity, hit, worldAngle, worldX, worldY)
     local phy = e.physics
     local sty = e.style
     if not phy or not sty then return end
@@ -539,15 +1054,21 @@ local function drawBody(e, opacity, hit)
     local border = applyHit(strokeHex(colorOf(e)), hit)
     local trap = bit.band(phy.flags or 0, PhysicsFlags.isTrapezoid) ~= 0
     local stroke = math.max(pixel() * 2.5, math.min((sty.borderWidth or 7.5) * 0.78, size * 0.2))
+    worldAngle = worldAngle or 0
+    worldX, worldY = worldX or 0, worldY or 0
 
     if sides == 1 then
         -- Keep the outline inside physics.size so the fill doesn't balloon past barrels.
         local r = math.max(size - stroke * 0.5, size * 0.72)
-        fillStroke(fill, border, opacity, stroke, function()
-            love.graphics.circle("fill", 0, 0, r)
-        end, function()
-            love.graphics.circle("line", 0, 0, r)
-        end, r)
+        if Render._style == "shaded" then
+            drawSphere3D(r, fill, border, opacity, stroke, worldAngle, worldX, worldY)
+        else
+            fillStroke(fill, border, opacity, stroke, function()
+                love.graphics.circle("fill", 0, 0, r)
+            end, function()
+                love.graphics.circle("line", 0, 0, r)
+            end, r)
+        end
     elseif sides == 2 then
         local w = phy.width or size
         local hl, hw = size / 2, w / 2
@@ -557,40 +1078,64 @@ local function drawBody(e, opacity, hit)
             tip = 1 + 0.5 * math.cos(dir)
             if tip < 0.2 then tip = 0.2 end
         end
-        local rec = shootRecoil(e)
-        local inner = -hl
-        local outer = inner + (2 * hl) * rec
-        local pts = chamferPoly({
-            inner, -hw,
-            outer, -hw * tip,
-            outer, hw * tip,
-            inner, hw
-        }, math.min(hl, hw) * 0.18)
-        fillStroke(fill, border, opacity, stroke, function()
-            if #pts >= 6 then love.graphics.polygon("fill", pts) end
-        end, function()
-            strokePoly(pts)
-        end, math.min(hl, hw))
+        local rec, shift, flip, isGun = shootRecoil(e)
+        local inner, outer
+        if isGun then
+            if flip then
+                outer = hl
+                inner = outer - (2 * hl) * rec
+            else
+                inner = -hl
+                outer = inner + (2 * hl) * rec
+            end
+        else
+            inner = -hl + shift
+            outer = hl + shift
+        end
+        if Render._style == "shaded" then
+            -- Sit on the tank midplane so the lid wins depth and the barrel
+            -- comes out the sides instead of through the top.
+            drawCylinder3D(inner, outer, hw, hw * tip, fill, border, opacity, stroke, 0, worldAngle, worldX, worldY, -hw * 0.35)
+        else
+            local pts = chamferPoly({
+                inner, -hw,
+                outer, -hw * tip,
+                outer, hw * tip,
+                inner, hw
+            }, math.min(hl, hw) * 0.18)
+            fillStroke(fill, border, opacity, stroke, function()
+                if #pts >= 6 then love.graphics.polygon("fill", pts) end
+            end, function()
+                strokePoly(pts)
+            end, math.min(hl, hw))
+        end
     else
         local star = flagged(sty, StyleFlags.isStar)
         -- Protocol size is the collision incircle. Diep draws polygons out to
         -- the vertices at size * sqrt(2).
         local rad = size * math.sqrt(2)
         local pts = polyRegular(sides, rad, star)
-        if star then
-            pts = chamferPoly(pts, rad * 0.06)
-        else
-            pts = chamferPoly(pts, rad * (sides == 3 and 0.045 or (sides <= 4 and 0.11 or 0.08)))
-        end
-        if Render._style ~= "old" then
+        if Render._style == "shaded" then
             pts = insetPts(pts, stroke * 0.5, rad)
-        end
-        if #pts >= 6 then
-            fillStroke(fill, border, opacity, stroke, function()
-                fillCenteredPoly(pts)
-            end, function()
-                strokePoly(pts)
-            end, size)
+            if #pts >= 6 then
+                drawPrism3D(pts, prismHeight(size), fill, border, opacity, stroke, worldAngle, worldX, worldY)
+            end
+        else
+            if star then
+                pts = chamferPoly(pts, rad * 0.06)
+            else
+                pts = chamferPoly(pts, rad * (sides == 3 and 0.045 or (sides <= 4 and 0.11 or 0.08)))
+            end
+            if Render._style ~= "old" then
+                pts = insetPts(pts, stroke * 0.5, rad)
+            end
+            if #pts >= 6 then
+                fillStroke(fill, border, opacity, stroke, function()
+                    fillCenteredPoly(pts)
+                end, function()
+                    strokePoly(pts)
+                end, size)
+            end
         end
     end
 end
@@ -689,7 +1234,7 @@ end
 
 local drawNode
 
-drawNode = function(e, parentAngle, parentOpacity, parentFlash, parentHit)
+drawNode = function(e, parentAngle, parentOpacity, parentFlash, parentHit, parentWX, parentWY)
     if e.camera or e.arena then return end
     if not e.physics and #(e.children or {}) == 0 then return end
     local lx, ly, la, flags = localPos(e)
@@ -704,23 +1249,43 @@ drawNode = function(e, parentAngle, parentOpacity, parentFlash, parentHit)
         drawOp = opacity * 0.4
     end
 
+    if Render._style == "shaded" then
+        parentWX, parentWY = parentWX or 0, parentWY or 0
+        local c, s = math.cos(parentAngle), math.sin(parentAngle)
+        local wx = parentWX + lx * c - ly * s
+        local wy = parentWY + lx * s + ly * c
+        local below, above = splitChildren(e)
+        local function kids(list)
+            for i = 1, #list do
+                drawNode(list[i], worldAngle, opacity, flash, hit, wx, wy)
+            end
+        end
+        kids(below)
+        love.graphics.push()
+        love.graphics.translate(wx, wy)
+        if e.physics then
+            drawBody(e, drawOp, hit, worldAngle, wx, wy)
+        end
+        if e.physics and flagged(e.style, StyleFlags.isVisible) then
+            love.graphics.setDepthMode("always", false)
+            drawHealth(e, drawOp)
+            drawName(e, drawOp)
+            love.graphics.setDepthMode("lequal", true)
+        end
+        love.graphics.pop()
+        kids(above)
+        return
+    end
+
     love.graphics.push()
     love.graphics.translate(lx, ly)
     local rot = abs and (la - parentAngle) or la
     love.graphics.push()
     love.graphics.rotate(rot)
-    local _, recoilX = shootRecoil(e)
     local below, above = splitChildren(e)
     local function drawKids(list)
-        if recoilX ~= 0 then
-            love.graphics.push()
-            love.graphics.translate(recoilX, 0)
-        end
         for i = 1, #list do
             drawNode(list[i], worldAngle, opacity, flash, hit)
-        end
-        if recoilX ~= 0 then
-            love.graphics.pop()
         end
     end
     drawKids(below)
@@ -739,10 +1304,20 @@ end
 function Render.draw(world)
     local camX, camY, fov = Render.view(world)
     Render._camX, Render._camY, Render._fov = camX, camY, fov
-    love.graphics.clear(hex(0xCDCDCD))
+    do
+        local r, g, b, a = hex(0xCDCDCD)
+        if Render._style == "shaded" then
+            love.graphics.clear(r, g, b, a, 0, 1)
+        else
+            love.graphics.clear(r, g, b, a)
+        end
+    end
     love.graphics.push()
     local scale, viewW, viewH = applyCamera(camX, camY, fov)
     Render._scale = scale
+    if Render._style == "shaded" then
+        syncCamera3D(viewH)
+    end
     Render._selfEntity = world:player()
     local arena = world:arenaValues()
     drawArenaFloor(arena)
@@ -756,8 +1331,15 @@ function Render.draw(world)
         end
     end
     table.sort(roots, childSort)
+    if Render._style == "shaded" then
+        pcall(love.graphics.setMeshCullMode, "none")
+        love.graphics.setDepthMode("lequal", true)
+    end
     for i = 1, #roots do
         drawNode(roots[i], 0, 1, false, 0)
+    end
+    if Render._style == "shaded" then
+        love.graphics.setDepthMode()
     end
     love.graphics.pop()
     return camX, camY, fov
@@ -766,8 +1348,15 @@ end
 local SQRT1_2 = math.sqrt(0.5)
 local SQRT2 = math.sqrt(2)
 
-local function iconPoly(sides, rad, stroke, fill, alpha)
+local function iconPoly(sides, rad, stroke, fill, alpha, angle)
     local pts = polyRegular(sides, rad, false)
+    if Render._style == "shaded" then
+        pts = insetPts(pts, stroke * 0.5, rad)
+        if #pts >= 6 then
+            drawPrism3D(pts, prismHeight(rad * 0.70710678118), fill, strokeHex(fill), alpha, stroke, angle or 0)
+        end
+        return
+    end
     pts = chamferPoly(pts, rad * (sides == 3 and 0.045 or (sides <= 4 and 0.11 or 0.08)))
     if Render._style ~= "old" then
         pts = insetPts(pts, stroke * 0.5, rad)
@@ -783,6 +1372,10 @@ end
 local function iconCircle(r, stroke, fill, alpha)
     local cr = r - stroke * 0.5
     if cr < r * 0.72 then cr = r * 0.72 end
+    if Render._style == "shaded" then
+        drawSphere3D(cr, fill, strokeHex(fill), alpha, stroke)
+        return
+    end
     fillStroke(fill, strokeHex(fill), alpha, stroke, function()
         love.graphics.circle("fill", 0, 0, cr)
     end, function()
@@ -797,14 +1390,18 @@ local function iconBarrel(size, width, ang, off, trap, trapDir, stroke, fill, al
         tip = 1 + 0.5 * math.cos(trapDir or 0)
         if tip < 0.2 then tip = 0.2 end
     end
+    if Render._style == "shaded" then
+        drawCylinder3D(0, size, hw, hw * tip, fill, strokeHex(fill), alpha, stroke, off, ang)
+        return
+    end
+    love.graphics.push()
+    love.graphics.rotate(ang)
     local pts = chamferPoly({
         0, off - hw,
         size, off - hw * tip,
         size, off + hw * tip,
         0, off + hw
     }, math.min(size, hw) * 0.16)
-    love.graphics.push()
-    love.graphics.rotate(ang)
     fillStroke(fill, strokeHex(fill), alpha, stroke, function()
         if #pts >= 6 then love.graphics.polygon("fill", pts) end
     end, function()
@@ -816,6 +1413,10 @@ end
 local function iconGuard(sides, sizeRatio, offsetAngle, bodyR, stroke, alpha)
     -- GuardObject multiplies sizeRatio by SQRT1_2; world polygons draw at size * sqrt(2).
     local rad = bodyR * sizeRatio * SQRT1_2 * SQRT2
+    if Render._style == "shaded" then
+        iconPoly(sides, rad, stroke, 0x555555, alpha, offsetAngle or 0)
+        return
+    end
     love.graphics.push()
     love.graphics.rotate(offsetAngle or 0)
     iconPoly(sides, rad, stroke, 0x555555, alpha)
@@ -826,9 +1427,14 @@ local function iconTurret(x, y, ang, stroke, alpha)
     local barrelFill = 0x999999
     love.graphics.push()
     love.graphics.translate(x, y)
-    love.graphics.rotate(ang or 0)
-    iconBarrel(55, 42 * 0.7, 0, 0, false, 0, stroke, barrelFill, alpha)
-    iconCircle(25, stroke, barrelFill, alpha)
+    if Render._style == "shaded" then
+        iconBarrel(55, 42 * 0.7, ang or 0, 0, false, 0, stroke, barrelFill, alpha)
+        iconCircle(25, stroke, barrelFill, alpha)
+    else
+        love.graphics.rotate(ang or 0)
+        iconBarrel(55, 42 * 0.7, 0, 0, false, 0, stroke, barrelFill, alpha)
+        iconCircle(25, stroke, barrelFill, alpha)
+    end
     love.graphics.pop()
 end
 
@@ -916,6 +1522,14 @@ function Render.drawTankIcon(def, cx, cy, box, alpha)
     local fill = 0x00B2E1
     local barrelFill = 0x999999
     local stroke = math.max(2.2 / s, bodyR * 0.08)
+    local savedX, savedY, savedZ, savedF = _camX, _camY, _camZ, _focal
+    if Render._style == "shaded" then
+        _camX, _camY = 0, 0
+        _camZ, _focal = 300, 300
+        pcall(love.graphics.clear, false, false, true)
+        pcall(love.graphics.setMeshCullMode, "none")
+        love.graphics.setDepthMode("lequal", true)
+    end
     love.graphics.push()
     love.graphics.translate(cx, cy)
     love.graphics.scale(s, s)
@@ -943,6 +1557,10 @@ function Render.drawTankIcon(def, cx, cy, box, alpha)
     end
     iconAddon(post, "over", bodyR, stroke, alpha)
     love.graphics.pop()
+    if Render._style == "shaded" then
+        love.graphics.setDepthMode()
+        _camX, _camY, _camZ, _focal = savedX, savedY, savedZ, savedF
+    end
 end
 
 Render.hex = hex

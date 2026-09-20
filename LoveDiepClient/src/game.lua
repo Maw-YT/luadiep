@@ -95,7 +95,12 @@ function Game:init()
     Achievements.load()
     Render.setStyle(Settings.style)
     Render.setInnerShadow(Settings.innerShadow)
+    self.password = Settings.devPassword or ""
     Console.ensure(self)
+end
+
+function Game:persistPassword()
+    Settings.setDevPassword(self.password or "")
 end
 
 function Game:notify(text, color, time)
@@ -625,6 +630,9 @@ function Game:textinput(text)
     end
     self[focus] = v:sub(1, caret) .. text .. v:sub(caret + 1)
     self.caret = caret + #text
+    if focus == "password" then
+        self:persistPassword()
+    end
 end
 
 function Game:toggleAutoFire()
@@ -773,11 +781,17 @@ function Game:keypressed(key, isrepeat)
         if FIELD_MAX[focus] and caret > 0 then
             self[focus] = v:sub(1, caret - 1) .. v:sub(caret + 1)
             self.caret = caret - 1
+            if focus == "password" then
+                self:persistPassword()
+            end
         end
     elseif key == "delete" then
         local focus, v, caret = self:fieldCaret()
         if FIELD_MAX[focus] and caret < #v then
             self[focus] = v:sub(1, caret) .. v:sub(caret + 2)
+            if focus == "password" then
+                self:persistPassword()
+            end
         end
     elseif key == "return" or key == "kpenter" or key == "enter" then
         Hud.press("spawnbtn")
