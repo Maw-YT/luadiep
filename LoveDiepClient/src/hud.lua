@@ -784,11 +784,8 @@ local function drawHome(game, buttons, sw, sh, markHover, hoverScaleFn)
     end, "spawnbtn")
 
     local rowY = playY + 68
-    local hostW = fieldW * 0.62
-    local portW = fieldW - hostW - 10
     love.graphics.setColor(0.7, 0.75, 0.82, 0.7 * a)
-    Render.print("Host", fx, rowY - 18)
-    Render.print("Port", fx + hostW + 10, rowY - 18)
+    Render.print("URL", fx, rowY - 18)
 
     local function smallField(key, x, y, w)
         local on = game.focus == key
@@ -805,21 +802,37 @@ local function drawHome(game, buttons, sw, sh, markHover, hoverScaleFn)
         if key == "password" then
             value = string.rep("•", #raw)
         end
-        if on then
-            local pos = game.caret or #raw
-            if pos < 0 then pos = 0 elseif pos > #raw then pos = #raw end
+        local pos = game.caret or #raw
+        if pos < 0 then pos = 0 elseif pos > #raw then pos = #raw end
+        local emptyHint = (key == "url" and raw == "" and not on)
+        if emptyHint then
+            love.graphics.setColor(0.45, 0.48, 0.52, a)
+            value = "127.0.0.1:8080"
+        elseif on then
             local mark = (love.timer.getTime() % 1 < 0.5) and "|" or ""
             value = txt(value:sub(1, pos)) .. mark .. txt(value:sub(pos + 1))
         else
             value = txt(value)
         end
-        Render.print(value, x + 10, y + 6)
+        local pad = 10
+        local inner = w - pad * 2
+        local font = love.graphics.getFont()
+        local ox = 0
+        if font and not emptyHint then
+            local prefix = on and txt((key == "password" and string.rep("•", pos) or raw:sub(1, pos))) or value
+            local prefixW = font:getWidth(prefix)
+            if prefixW > inner - 8 then
+                ox = (inner - 8) - prefixW
+            end
+        end
+        scissorGui(x + 8, y + 2, w - 16, 28)
+        Render.print(value, x + pad + ox, y + 6)
+        love.graphics.setScissor()
         box(buttons, x, y, w, 32, function()
             game:focusField(key)
         end, key, "ibeam")
     end
-    smallField("host", fx, rowY, hostW)
-    smallField("port", fx + hostW + 10, rowY, portW)
+    smallField("url", fx, rowY, fieldW)
 
     love.graphics.setColor(0.7, 0.75, 0.82, 0.7 * a)
     Render.print("Dev password", fx, rowY + 42)
@@ -932,7 +945,7 @@ local function drawOptions(game, buttons, sw, sh, markHover, hoverScaleFn)
         end
     end, "optback", "arrow")
 
-    local pw, ph = 420, 520
+    local pw, ph = 420, 610
     local px, py = (sw - pw) * 0.5, (sh - ph) * 0.5
     love.graphics.setColor(0, 0, 0, 0.45)
     love.graphics.rectangle("fill", 0, 0, sw, sh)
@@ -951,8 +964,18 @@ local function drawOptions(game, buttons, sw, sh, markHover, hoverScaleFn)
     love.graphics.setColor(0.72, 0.78, 0.86, 0.9)
     Render.print("Style", px + 36, py + 78)
 
-    local style = (Settings.style == "old") and "old" or "new"
-    local label = (style == "old") and "Old" or "New (default)"
+    local style = "new"
+    if Settings.style == "old" then
+        style = "old"
+    elseif Settings.style == "shaded" then
+        style = "shaded"
+    end
+    local label = "New (default)"
+    if style == "old" then
+        label = "Old"
+    elseif style == "shaded" then
+        label = "Shaded"
+    end
     local bx, by, bw, bh = px + 36, py + 104, pw - 72, 44
     markHover("style", bx, by, bw, bh)
     local dx, dy, dw, dh = hoverScaleFn("style", bx, by, bw, bh)
@@ -980,9 +1003,9 @@ local function drawOptions(game, buttons, sw, sh, markHover, hoverScaleFn)
     local barH = 16
     local barY = rowY + (btnS - barH) * 0.5
 
-    local function scaleBtn(x, key, label, dir)
-        markHover(key, x, rowY, btnS, btnS)
-        local hx, hy, hw, hh = hoverScaleFn(key, x, rowY, btnS, btnS)
+    local function scaleBtn(x, y, key, label, onClick)
+        markHover(key, x, y, btnS, btnS)
+        local hx, hy, hw, hh = hoverScaleFn(key, x, y, btnS, btnS)
         local rr, gg, bb = 0.16, 0.55, 0.85
         love.graphics.setColor(rr, gg, bb, 0.96)
         roundrect(hx, hy, hw, hh, 10)
@@ -991,36 +1014,67 @@ local function drawOptions(game, buttons, sw, sh, markHover, hoverScaleFn)
         love.graphics.setColor(1, 1, 1, 1)
         Render.outlinedPrintf(label, hx, hy + 12, hw, "center", 2)
         buttonFlash(hx, hy, hw, hh, 10, key, 1)
-        box(buttons, x, rowY, btnS, btnS, function()
+        box(buttons, x, y, btnS, btnS, function()
             game.styleMenuOpen = false
-            Settings.nudgeHudScale(dir)
+            onClick()
         end, key)
     end
-    scaleBtn(minusX, "hudminus", "-", -1)
-    scaleBtn(plusX, "hudplus", "+", 1)
+    local function drawBar(barX, barY, barW, barH, t, storeKey, dragKey, onBegin)
+        love.graphics.setColor(0.14, 0.16, 0.20, 0.96)
+        roundrect(barX, barY, barW, barH, 8)
+        love.graphics.setColor(0.16, 0.55, 0.85, 0.95)
+        local fillW = math.max(8, barW * t)
+        roundrect(barX, barY, fillW, barH, 8)
+        love.graphics.setColor(1, 1, 1, 0.95)
+        local knobW = 14
+        local knobX = barX + (barW - knobW) * t
+        roundrect(knobX, barY - 4, knobW, barH + 8, 6)
+        game[storeKey] = { x = barX, y = barY - 8, w = barW, h = barH + 16 }
+        box(buttons, barX, barY - 8, barW, barH + 16, function()
+            game.styleMenuOpen = false
+            game[dragKey] = true
+            onBegin()
+        end, dragKey, "hand")
+    end
 
-    love.graphics.setColor(0.14, 0.16, 0.20, 0.96)
-    roundrect(barX, barY, barW, barH, 8)
-    love.graphics.setColor(0.16, 0.55, 0.85, 0.95)
-    local fillW = math.max(8, barW * t)
-    roundrect(barX, barY, fillW, barH, 8)
-    love.graphics.setColor(1, 1, 1, 0.95)
-    local knobW = 14
-    local knobX = barX + (barW - knobW) * t
-    roundrect(knobX, barY - 4, knobW, barH + 8, 6)
-    game._hudScaleBar = { x = barX, y = barY - 8, w = barW, h = barH + 16 }
-    box(buttons, barX, barY - 8, barW, barH + 16, function()
-        game.styleMenuOpen = false
-        game.hudScaleDrag = true
+    scaleBtn(minusX, rowY, "hudminus", "-", function()
+        Settings.nudgeHudScale(-1)
+    end)
+    scaleBtn(plusX, rowY, "hudplus", "+", function()
+        Settings.nudgeHudScale(1)
+    end)
+    drawBar(barX, barY, barW, barH, t, "_hudScaleBar", "hudScaleDrag", function()
         local gx = Hud.screenToGui(love.mouse.getPosition())
         Settings.setHudScaleFromBar(gx, game._hudScaleBar)
-    end, "hudscale", "hand")
+    end)
 
     love.graphics.setColor(0.72, 0.78, 0.86, 0.9)
-    Render.print("FPS Counter", px + 36, py + 258)
+    Render.print("Inner Shadow", px + 36, py + 258)
+    local st, shadowVal = Settings.innerShadowT()
+    local spct = string.format("%d%%", math.floor(shadowVal * 100 + 0.5))
+    love.graphics.setColor(0.85, 0.90, 0.96, 0.95)
+    Render.printf(spct, bx, py + 258, bw, "right")
+    local sRowY = py + 284
+    local sBarY = sRowY + (btnS - barH) * 0.5
+    scaleBtn(minusX, sRowY, "shadminus", "-", function()
+        Settings.nudgeInnerShadow(-1)
+        Render.setInnerShadow(Settings.innerShadow)
+    end)
+    scaleBtn(plusX, sRowY, "shadplus", "+", function()
+        Settings.nudgeInnerShadow(1)
+        Render.setInnerShadow(Settings.innerShadow)
+    end)
+    drawBar(barX, sBarY, barW, barH, st, "_innerShadowBar", "innerShadowDrag", function()
+        local gx = Hud.screenToGui(love.mouse.getPosition())
+        Settings.setInnerShadowFromBar(gx, game._innerShadowBar)
+        Render.setInnerShadow(Settings.innerShadow)
+    end)
+
+    love.graphics.setColor(0.72, 0.78, 0.86, 0.9)
+    Render.print("FPS Counter", px + 36, py + 348)
     local fpsOn = Settings.showFps == true
     local fpsLabel = fpsOn and "On" or "Off"
-    local fx, fy, fw, fh = bx, py + 284, bw, 44
+    local fx, fy, fw, fh = bx, py + 374, bw, 44
     markHover("showfps", fx, fy, fw, fh)
     local hx, hy, hw, hh = hoverScaleFn("showfps", fx, fy, fw, fh)
     local fpr, fpg, fpb = fpsOn and 0.16 or 0.18, fpsOn and 0.55 or 0.22, fpsOn and 0.85 or 0.28
@@ -1055,6 +1109,7 @@ local function drawOptions(game, buttons, sw, sh, markHover, hoverScaleFn)
     if game.styleMenuOpen then
         local opts = {
             { id = "new", label = "New (default)" },
+            { id = "shaded", label = "Shaded" },
             { id = "old", label = "Old" }
         }
         local dropY = by + bh + 6

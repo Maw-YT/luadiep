@@ -7,9 +7,24 @@ Render._camX = 0
 Render._camY = 0
 Render._fov = 0.35
 Render._style = "new"
+Render._innerShadow = 0.15
 
 function Render.setStyle(style)
-    Render._style = (style == "old") and "old" or "new"
+    if style == "old" then
+        Render._style = "old"
+    elseif style == "shaded" then
+        Render._style = "shaded"
+    else
+        Render._style = "new"
+    end
+end
+
+function Render.setInnerShadow(coverage)
+    coverage = tonumber(coverage) or 0.15
+    if coverage ~= coverage then coverage = 0.15 end
+    if coverage < 0 then coverage = 0 end
+    if coverage > 1 then coverage = 1 end
+    Render._innerShadow = coverage
 end
 
 local StyleFlags = Enums.StyleFlags
@@ -412,11 +427,55 @@ local function strokeHex(fill)
     return darker(fill)
 end
 
-local function fillStroke(fill, border, opacity, stroke, drawFill, drawStroke)
+-- Screen-space light (top-left) expressed in the current local transform.
+local LIGHT_X, LIGHT_Y = -0.70710678118, -0.70710678118
+
+local function localLight()
+    local ok, x0, y0, x1, y1 = pcall(function()
+        local a, b = love.graphics.transformPoint(0, 0)
+        local c, d = love.graphics.transformPoint(1, 0)
+        return a, b, c, d
+    end)
+    if not ok then return LIGHT_X, LIGHT_Y end
+    local dx, dy = x1 - x0, y1 - y0
+    local len = math.sqrt(dx * dx + dy * dy)
+    if not len or len < 1e-8 then return LIGHT_X, LIGHT_Y end
+    dx, dy = dx / len, dy / len
+    return dx * LIGHT_X + dy * LIGHT_Y, -dy * LIGHT_X + dx * LIGHT_Y
+end
+
+-- Inset indent: a smaller copy of the same silhouette, so the shade is a rim
+-- that warps around circles, corners, and barrels instead of a flat crescent.
+local function paintInnerShadow(fill, opacity, drawFill, size)
+    if Render._style ~= "shaded" or not size or size < 1.4 or opacity < 0.05 then
+        return
+    end
+    local cover = Render._innerShadow or 0.15
+    if cover <= 0.001 then return end
+    if cover > 1 then cover = 1 end
+    local inner = 1 - cover
+    if inner < 0.02 then inner = 0.02 end
+    local lx, ly = localLight()
+    local shift = size * cover * 0.45
+    love.graphics.stencil(drawFill, "replace", 1)
+    love.graphics.setStencilTest("equal", 1)
+    love.graphics.setColor(0, 0, 0, opacity * 0.32)
+    drawFill()
+    love.graphics.setColor(hex(fill, opacity))
+    love.graphics.push()
+    love.graphics.translate(lx * shift, ly * shift)
+    love.graphics.scale(inner, inner)
+    drawFill()
+    love.graphics.pop()
+    love.graphics.setStencilTest()
+end
+
+local function fillStroke(fill, border, opacity, stroke, drawFill, drawStroke, shadeSize)
     love.graphics.setLineStyle("smooth")
     love.graphics.setLineJoin(Render._style == "old" and "miter" or "bevel")
     love.graphics.setColor(hex(fill, opacity))
     drawFill()
+    paintInnerShadow(fill, opacity, drawFill, shadeSize)
     love.graphics.setColor(hex(border, opacity))
     love.graphics.setLineWidth(stroke)
     drawStroke()
@@ -488,7 +547,7 @@ local function drawBody(e, opacity, hit)
             love.graphics.circle("fill", 0, 0, r)
         end, function()
             love.graphics.circle("line", 0, 0, r)
-        end)
+        end, r)
     elseif sides == 2 then
         local w = phy.width or size
         local hl, hw = size / 2, w / 2
@@ -511,7 +570,7 @@ local function drawBody(e, opacity, hit)
             if #pts >= 6 then love.graphics.polygon("fill", pts) end
         end, function()
             strokePoly(pts)
-        end)
+        end, math.min(hl, hw))
     else
         local star = flagged(sty, StyleFlags.isStar)
         -- Protocol size is the collision incircle. Diep draws polygons out to
@@ -531,7 +590,7 @@ local function drawBody(e, opacity, hit)
                 fillCenteredPoly(pts)
             end, function()
                 strokePoly(pts)
-            end)
+            end, size)
         end
     end
 end
@@ -718,7 +777,7 @@ local function iconPoly(sides, rad, stroke, fill, alpha)
         fillCenteredPoly(pts)
     end, function()
         strokePoly(pts)
-    end)
+    end, rad * 0.72)
 end
 
 local function iconCircle(r, stroke, fill, alpha)
@@ -728,7 +787,7 @@ local function iconCircle(r, stroke, fill, alpha)
         love.graphics.circle("fill", 0, 0, cr)
     end, function()
         love.graphics.circle("line", 0, 0, cr)
-    end)
+    end, cr)
 end
 
 local function iconBarrel(size, width, ang, off, trap, trapDir, stroke, fill, alpha)
@@ -750,7 +809,7 @@ local function iconBarrel(size, width, ang, off, trap, trapDir, stroke, fill, al
         if #pts >= 6 then love.graphics.polygon("fill", pts) end
     end, function()
         if #pts >= 6 then love.graphics.polygon("line", pts) end
-    end)
+    end, math.min(size, hw))
     love.graphics.pop()
 end
 

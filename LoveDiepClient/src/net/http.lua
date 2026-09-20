@@ -1,5 +1,6 @@
 local class = require("src.class")
 local Tcp = require("src.net.tcp")
+local Url = require("src.net.url")
 
 local HttpGet = class()
 
@@ -25,18 +26,36 @@ function HttpGet:finish(ok, body)
     end
 end
 
-function HttpGet:get(host, port, path, callback)
+function HttpGet:get(target, callback)
+    if type(target) == "string" then
+        local parsed, err = Url.parse(target)
+        if not parsed then
+            self.callback = callback
+            self:finish(false, err or "invalid url")
+            return self
+        end
+        target = parsed
+    end
     self.callback = callback
     self.startedAt = love.timer.getTime()
-    local ok, err = self.tcp:connect(host, tonumber(port) or 8080)
+    if type(target) ~= "table" or not target.host then
+        self:finish(false, "invalid url")
+        return self
+    end
+    local host = target.host
+    local port = tonumber(target.port) or 8080
+    local path = Url.requestPath(target)
+    local ok, err = self.tcp:connect(host, port, target.tls)
     if not ok then
         self:finish(false, err or "connect failed")
         return self
     end
     local req = table.concat({
-        "GET " .. (path or "/") .. " HTTP/1.1",
-        "Host: " .. tostring(host) .. ":" .. tostring(port),
+        "GET " .. path .. " HTTP/1.1",
+        "Host: " .. Url.hostHeader(target),
         "Accept: application/json",
+        "User-Agent: LoveDiepClient",
+        "ngrok-skip-browser-warning: 1",
         "Connection: close",
         "",
         ""
@@ -47,12 +66,16 @@ end
 
 function HttpGet:update()
     if self.done then return end
-    if self.startedAt > 0 and (love.timer.getTime() - self.startedAt) > 8 then
+    if self.startedAt > 0 and (love.timer.getTime() - self.startedAt) > 12 then
         self:finish(false, "timed out")
         return
     end
     self.tcp:update()
     self.buf = self.buf .. self.tcp:readAll()
+    if #self.buf > 1048576 then
+        self:finish(false, "network buffer overflow")
+        return
+    end
     if not self.headerDone then
         local sep = self.buf:find("\r\n\r\n", 1, true)
         local sepLen = 4

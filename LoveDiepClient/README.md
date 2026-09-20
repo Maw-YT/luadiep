@@ -18,7 +18,7 @@ luvit main.lua
 love LoveDiepClient
 ```
 
-Connect to `127.0.0.1` port `8080`, gamemode `ffa` or `sandbox`.
+Connect to `127.0.0.1:8080` (or any `ws://host:port/path`), then pick `ffa` or `sandbox`.
 
 ## Controls
 

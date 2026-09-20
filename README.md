@@ -31,7 +31,7 @@ In another terminal, start the client:
 love LoveDiepClient
 ```
 
-Connect to `127.0.0.1` port `8080`, then pick **FFA** or **Sandbox**.
+Connect to `127.0.0.1:8080`, then pick **FFA** or **Sandbox**.
 
 ## License
 

@@ -2,6 +2,7 @@ local Encode = require("src.protocol.encode")
 local Render = require("src.render")
 local json = require("src.json")
 local HttpGet = require("src.net.http")
+local Url = require("src.net.url")
 local config = require("src.config")
 
 local Console = {}
@@ -165,15 +166,19 @@ end
 
 function Console.fetch(game)
     if not game then return end
-    local host = tostring(game.host or config.defaultHost)
-    local port = tonumber(game.port) or config.defaultPort
-    local key = host .. ":" .. tostring(port)
+    local raw = game.url
+    if type(raw) ~= "string" or raw:match("^%s*$") then
+        raw = config.defaultUrl
+    end
+    local target = Url.resolveApi(raw, (config.apiPath or "/api") .. "/commands", game.modes)
+    if not target then return end
+    local key = target.host .. ":" .. tostring(target.port) .. Url.requestPath(target)
     if fetch and not fetch.done then
         fetch.callback = nil
         fetch:finish(false, "replaced")
     end
     fetch = HttpGet:new()
-    fetch:get(host, port, (config.apiPath or "/api") .. "/commands", function(ok, body)
+    fetch:get(target, function(ok, body)
         if not ok then
             if body ~= "replaced" and not remoteCommands then
                 Console.push(game, "Couldn't load server commands; using local list.", 0xFFAA00)

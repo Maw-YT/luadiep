@@ -3,6 +3,7 @@ local class = require("src.class")
 local config = require("src.config")
 local json = require("src.json")
 local WebSocket = require("src.net.websocket")
+local Url = require("src.net.url")
 local Reader = require("src.coder.reader")
 local Encode = require("src.protocol.encode")
 local Enums = require("src.protocol.enums")
@@ -22,12 +23,11 @@ local GAMEMODES = {
 
 local FIELD_MAX = {
     spawnName = 16,
-    host = 64,
-    port = 8,
+    url = 256,
     password = 48
 }
 
-local FOCUS_ORDER = { "spawnName", "host", "port", "password" }
+local FOCUS_ORDER = { "spawnName", "url", "password" }
 
 local Game = class()
 
@@ -57,8 +57,7 @@ function Game:init()
     self.ws = nil
     self.state = "menu"
     self.error = nil
-    self.host = config.defaultHost
-    self.port = tostring(config.defaultPort)
+    self.url = config.defaultUrl
     self.gamemode = config.defaultGamemode
     self.password = ""
     self.spawnName = ""
@@ -95,6 +94,7 @@ function Game:init()
     Settings.load()
     Achievements.load()
     Render.setStyle(Settings.style)
+    Render.setInnerShadow(Settings.innerShadow)
     Console.ensure(self)
 end
 
@@ -150,8 +150,20 @@ function Game:spawn()
     self:send(Encode.spawn(name))
 end
 
+function Game:playTarget()
+    local raw = self.url
+    if type(raw) ~= "string" or raw:match("^%s*$") then
+        raw = config.defaultUrl
+    end
+    return Url.resolvePlay(raw, self.gamemode, self.modes)
+end
+
 function Game:endpointKey()
-    return tostring(self.host or "") .. ":" .. tostring(self.port or "") .. "/" .. tostring(self.gamemode or "ffa")
+    local target = self:playTarget()
+    if not target then
+        return tostring(self.url or "") .. "/" .. tostring(self.gamemode or "ffa")
+    end
+    return target.host .. ":" .. tostring(target.port) .. Url.requestPath(target)
 end
 
 function Game:connected()
@@ -202,10 +214,28 @@ function Game:selectGamemode(id)
     self:connect()
 end
 
+function Game:syncGamemodeFromUrl()
+    local raw = self.url
+    if type(raw) ~= "string" or raw:match("^%s*$") then return end
+    local parsed = Url.parse(raw)
+    if not parsed then return end
+    local last = Url.lastSegment(parsed.path)
+    if last == "" then return end
+    last = last:lower()
+    local modes = self.modes or GAMEMODES
+    for i = 1, #modes do
+        if modes[i].id == last then
+            self.gamemode = last
+            return
+        end
+    end
+end
+
 function Game:play()
     if self.world:isSpawned() or self.world:isWaitingStart() then
         return
     end
+    self:syncGamemodeFromUrl()
     self.wantSpawn = true
     self.focus = "spawnName"
     if not self.readyDelay or self.readyDelay <= 0 then
@@ -245,14 +275,26 @@ function Game:connect()
     self.spawnRetry = 0
     self.world:clear()
     self.notifications = {}
+    local target, targetErr = self:playTarget()
+    if not target then
+        self:dropSocket()
+        self.state = "menu"
+        self.error = targetErr or "invalid url"
+        self._connectedTo = ""
+        self._authPassword = ""
+        self.wantSpawn = false
+        return
+    end
     self:dropSocket()
     self.ws = WebSocket:new()
     local game = self
     self.ws.onOpen = function()
         game.error = nil
+        game.lastPacketAt = love.timer.getTime()
         game:send(Encode.init(game.password))
         game:send(Encode.ping())
         game.pingAcc = 0
+        Console.fetch(game)
     end
     self.ws.onMessage = function(payload)
         game:onPacket(payload)
@@ -273,10 +315,9 @@ function Game:connect()
         game.treeOpen = false
     end
     self.state = "connecting"
-    self._connectedTo = self:endpointKey()
+    self._connectedTo = target.host .. ":" .. tostring(target.port) .. Url.requestPath(target)
     self._authPassword = self.password or ""
-    local path = "/" .. (self.gamemode or "ffa")
-    local ok, err = self.ws:connect(self.host, tonumber(self.port) or 8080, path)
+    local ok, err = self.ws:connect(target)
     if not ok then
         self.state = "menu"
         self.error = err or "connect failed"
@@ -285,7 +326,6 @@ function Game:connect()
         self.wantSpawn = false
         return
     end
-    Console.fetch(self)
 end
 
 function Game:disconnect()
@@ -360,6 +400,7 @@ end
 
 function Game:onPacket(data)
     if type(data) ~= "string" or #data < 1 then return end
+    self.lastPacketAt = love.timer.getTime()
     local r = Reader:new(data)
     local header = r:u8()
     local CB = Enums.ClientBound
@@ -419,11 +460,17 @@ function Game:update(dt)
                 self.pingAcc = 0
                 self:send(Encode.ping())
             end
-        end
-        if self.ws.err and self.state == "connecting" then
+            local last = self.lastPacketAt
+            if last and (love.timer.getTime() - last) > 8 then
+                self.ws.err = "timed out"
+                self.ws:close()
+            end
+        elseif self.ws.err then
             self.error = self.ws.err
-            self.state = "menu"
-            self._connectedTo = ""
+            if self.state == "connecting" then
+                self.state = "menu"
+                self._connectedTo = ""
+            end
         end
     end
     self.world:interpolate(dt)
@@ -568,9 +615,6 @@ function Game:textinput(text)
     end
     local focus, v, caret = self:fieldCaret()
     if not FIELD_MAX[focus] then
-        return
-    end
-    if focus == "port" and not tostring(text):match("^%d+$") then
         return
     end
     local maxn = FIELD_MAX[focus] or 48
@@ -764,6 +808,15 @@ function Game:mousemoved(x, y)
             Settings.save()
         end
     end
+    if self.innerShadowDrag then
+        if love.mouse.isDown(1) then
+            Settings.setInnerShadowFromBar(gx, self._innerShadowBar, true)
+            Render.setInnerShadow(Settings.innerShadow)
+        else
+            self.innerShadowDrag = false
+            Settings.save()
+        end
+    end
 end
 
 function Game:mousereleased(x, y, button)
@@ -772,6 +825,11 @@ function Game:mousereleased(x, y, button)
     if button == 1 and self.hudScaleDrag then
         Settings.setHudScaleFromBar(gx, self._hudScaleBar)
         self.hudScaleDrag = false
+    end
+    if button == 1 and self.innerShadowDrag then
+        Settings.setInnerShadowFromBar(gx, self._innerShadowBar)
+        Render.setInnerShadow(Settings.innerShadow)
+        self.innerShadowDrag = false
     end
 end
 

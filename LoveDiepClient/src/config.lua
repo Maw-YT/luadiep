@@ -3,8 +3,7 @@ local bit = require("bit")
 local config = {}
 
 config.buildHash = "6f59094d60f98fafc14371671d3ff31ef4d75d9e"
-config.defaultHost = "127.0.0.1"
-config.defaultPort = 8080
+config.defaultUrl = "127.0.0.1:8080"
 config.defaultGamemode = "ffa"
 config.apiPath = "/api"
 config.pingInterval = 0.25
