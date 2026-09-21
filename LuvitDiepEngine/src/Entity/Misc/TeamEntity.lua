@@ -35,7 +35,7 @@ local ColorsTeamName = {
 local TeamEntity = class(Entity)
 
 function TeamEntity.isTeam(entity)
-    return entity ~= nil and entity.teamData ~= nil
+    return entity ~= nil and entity._isTeam == true
 end
 
 function TeamEntity.setTeam(team, entity)
@@ -50,6 +50,7 @@ end
 
 function TeamEntity:init(game, color, name)
     Entity.init(self, game)
+    self._isTeam = true
     self.teamData = FieldGroups.TeamGroup:new(self)
     self.teamData.values.teamColor = color
     self.teamName = name or ColorsTeamName[color] or "UNKNOWN"

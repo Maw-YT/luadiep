@@ -2,6 +2,7 @@
   {
     "date": "Sep 21, 2026",
     "items": [
+      "Server now hosts 2TDM, 4TDM, Maze, Survival, Domination, and Mothership.",
       "Client FPS now follows the monitor refresh rate.",
       "Tank tree icons are cached so zooming stays smooth.",
       "The match still plays behind the tank tree.",

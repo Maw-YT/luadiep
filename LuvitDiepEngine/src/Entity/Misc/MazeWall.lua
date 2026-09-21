@@ -9,6 +9,14 @@ local Enums = require("../../Const/Enums")
 
 local MazeWall = class(ObjectEntity)
 
+function MazeWall.newFromBounds(arena, minX, minY, maxX, maxY)
+    if minX > maxX then minX, maxX = maxX, minX end
+    if minY > maxY then minY, maxY = maxY, minY end
+    local width = maxX - minX
+    local height = maxY - minY
+    return MazeWall:new(arena, (minX + maxX) / 2, (minY + maxY) / 2, width, height)
+end
+
 function MazeWall:init(arena, x, y, width, height)
     ObjectEntity.init(self, arena.game)
     self:setGlobalEntity()

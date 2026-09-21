@@ -7,6 +7,12 @@ local Servers = {}
 
 local FALLBACK = {
     { id = "ffa", label = "FFA" },
+    { id = "teams", label = "2TDM" },
+    { id = "4teams", label = "4TDM" },
+    { id = "maze", label = "Maze" },
+    { id = "survival", label = "Survival" },
+    { id = "dom", label = "Domination" },
+    { id = "mot", label = "Mothership" },
     { id = "sandbox", label = "Sandbox" }
 }
 

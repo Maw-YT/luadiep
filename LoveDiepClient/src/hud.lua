@@ -7,6 +7,7 @@ local Settings = require("src.settings")
 local TankTree = require("src.tanktree")
 local Achievements = require("src.achievements")
 local Changelog = require("src.changelog")
+local Servers = require("src.servers")
 
 local Hud = {}
 
@@ -777,7 +778,7 @@ local function drawHome(game, buttons, sw, sh, markHover, hoverScaleFn)
     local fy = sh * 0.38
     local connecting = game.state == "connecting"
     local ready = game.ws and game.ws.state == "open"
-    local modes = game.modes or { { id = "ffa", label = "FFA" }, { id = "sandbox", label = "Sandbox" } }
+    local modes = game.modes or Servers.fallback()
     local gap = 12
     local count = math.max(1, #modes)
     local cols = math.min(count, 4)

@@ -1340,42 +1340,74 @@ local function drawBody(e, opacity, hit, worldAngle, worldX, worldY, worldZ)
     elseif sides == 2 then
         local w = phy.width or size
         local hl, hw = size / 2, w / 2
-        local tip = 1
-        if trap then
-            local dir = (e.barrel and e.barrel.trapezoidDirection) or 0
-            tip = 1 + 0.5 * math.cos(dir)
-            if tip < 0.2 then tip = 0.2 end
-        end
-        local rec, shift, flip, isGun = shootRecoil(e)
-        local inner, outer
-        if isGun then
-            if flip then
-                outer = hl
-                inner = outer - (2 * hl) * rec
-            else
-                inner = -hl
-                outer = inner + (2 * hl) * rec
+        -- Protocol sides=2 is a rectangle. Barrels / trapezoid launchers stay
+        -- cylinders; maze walls are boxes. Team bases stay flat 2D even in 3D.
+        local isBarrelShape = e.barrel or trap
+        local isBase = bit.band(phy.flags or 0, PhysicsFlags.isBase) ~= 0
+        if isBase then
+            love.graphics.push()
+            love.graphics.rotate(worldAngle or 0)
+            if Render._style == "shaded" then
+                love.graphics.setDepthMode("always", false)
             end
+            love.graphics.setColor(hex(fill, opacity))
+            love.graphics.polygon("fill", -hl, -hw, hl, -hw, hl, hw, -hl, hw)
+            if Render._style == "shaded" then
+                love.graphics.setDepthMode("lequal", true)
+            end
+            love.graphics.pop()
+        elseif Render._style == "shaded" and not isBarrelShape then
+            local isWall = bit.band(phy.flags or 0, PhysicsFlags.isSolidWall) ~= 0
+            local thick = math.min(size, w)
+            local height = isWall and prismHeight(math.min(thick, 900)) or prismHeight(math.min(thick, 400))
+            local pts = {
+                -hl, -hw,
+                hl, -hw,
+                hl, hw,
+                -hl, hw
+            }
+            local boxStroke = ((sty.borderWidth or 0) > 0.5) and stroke or 0
+            -- Sit on the play plane so walls rise up instead of hanging through it.
+            drawPrism3D(pts, height, fill, border, opacity, boxStroke, worldAngle, worldX, worldY, worldZ + height * 0.5)
         else
-            inner = -hl + shift
-            outer = hl + shift
-        end
-        if Render._style == "shaded" then
-            -- Sit on the tank midplane so the lid wins depth and the barrel
-            -- comes out the sides instead of through the top.
-            drawCylinder3D(inner, outer, hw, hw * tip, fill, border, opacity, stroke, 0, worldAngle, worldX, worldY, -hw * 0.35, worldZ)
-        else
-            local pts = chamferPoly({
-                inner, -hw,
-                outer, -hw * tip,
-                outer, hw * tip,
-                inner, hw
-            }, math.min(hl, hw) * 0.18)
-            fillStroke(fill, border, opacity, stroke, function()
-                if #pts >= 6 then love.graphics.polygon("fill", pts) end
-            end, function()
-                strokePoly(pts)
-            end, math.min(hl, hw))
+            local tip = 1
+            if trap then
+                local dir = (e.barrel and e.barrel.trapezoidDirection) or 0
+                tip = 1 + 0.5 * math.cos(dir)
+                if tip < 0.2 then tip = 0.2 end
+            end
+            local rec, shift, flip, isGun = shootRecoil(e)
+            local inner, outer
+            if isGun then
+                if flip then
+                    outer = hl
+                    inner = outer - (2 * hl) * rec
+                else
+                    inner = -hl
+                    outer = inner + (2 * hl) * rec
+                end
+            else
+                inner = -hl + shift
+                outer = hl + shift
+            end
+            if Render._style == "shaded" then
+                -- Sit on the tank midplane so the lid wins depth and the barrel
+                -- comes out the sides instead of through the top.
+                drawCylinder3D(inner, outer, hw, hw * tip, fill, border, opacity, stroke, 0, worldAngle, worldX, worldY, -hw * 0.35, worldZ)
+            else
+                local chamfer = isBarrelShape and (math.min(hl, hw) * 0.18) or math.min(hl, hw, 12) * 0.08
+                local pts = chamferPoly({
+                    inner, -hw,
+                    outer, -hw * tip,
+                    outer, hw * tip,
+                    inner, hw
+                }, chamfer)
+                fillStroke(fill, border, opacity, stroke, function()
+                    if #pts >= 6 then love.graphics.polygon("fill", pts) end
+                end, function()
+                    strokePoly(pts)
+                end, math.min(hl, hw))
+            end
         end
     else
         local star = flagged(sty, StyleFlags.isStar)
@@ -1642,7 +1674,8 @@ function Render.draw(world)
             local px = e.ix or (e.position and e.position.x) or 0
             local py = e.iy or (e.position and e.position.y) or 0
             local size = e.physics.size or 0
-            local pad = size * 4 + 160
+            local width = e.physics.width or 0
+            local pad = math.max(size, width) + 200
             if px + pad >= x0 and px - pad <= x1 and py + pad >= y0 and py - pad <= y1 then
                 roots[#roots + 1] = e
             end

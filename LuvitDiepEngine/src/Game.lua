@@ -43,6 +43,12 @@ function GameServer:init(ArenaClass, name)
         self.gamemode = ArenaClass
         local map = {
             ffa = require("./Gamemodes/FFA"),
+            teams = require("./Gamemodes/Teams"),
+            ["4teams"] = require("./Gamemodes/FourTeams"),
+            maze = require("./Gamemodes/Maze"),
+            survival = require("./Gamemodes/Survival"),
+            dom = require("./Gamemodes/Domination"),
+            mot = require("./Gamemodes/Mothership"),
             sandbox = require("./Gamemodes/Sandbox")
         }
         ArenaClass = map[ArenaClass] or require("./Gamemodes/Sandbox")

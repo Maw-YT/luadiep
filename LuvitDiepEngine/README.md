@@ -26,6 +26,12 @@ The server listens on port **8080** by default (`PORT` env var overrides it).
 | http://localhost:8080/api/servers | Gamemode list |
 | http://localhost:8080/api/colors | Color table |
 | ws://localhost:8080/ffa | FFA |
+| ws://localhost:8080/teams | 2TDM |
+| ws://localhost:8080/4teams | 4TDM |
+| ws://localhost:8080/maze | Maze |
+| ws://localhost:8080/survival | Survival |
+| ws://localhost:8080/dom | Domination |
+| ws://localhost:8080/mot | Mothership |
 | ws://localhost:8080/sandbox | Sandbox (cheats enabled) |
 
 Then start the client:
@@ -34,7 +40,7 @@ Then start the client:
 love ../LoveDiepClient
 ```
 
-Connect to `127.0.0.1:8080` and pick `ffa` or `sandbox`.
+Connect to `127.0.0.1:8080` and pick a gamemode.
 
 ## Configuration
 

@@ -106,7 +106,13 @@ Enums.PositionFlags = {
 
 Enums.PhysicsFlags = {
     isTrapezoid = bit.lshift(1, 0),
-    showsOnMap = bit.lshift(1, 1)
+    showsOnMap = bit.lshift(1, 1),
+    doChildrenCollision = bit.lshift(1, 2),
+    noOwnTeamCollision = bit.lshift(1, 3),
+    isSolidWall = bit.lshift(1, 4),
+    onlySameOwnerCollision = bit.lshift(1, 5),
+    isBase = bit.lshift(1, 6),
+    canEscapeArena = bit.lshift(1, 8)
 }
 
 Enums.HealthFlags = {
