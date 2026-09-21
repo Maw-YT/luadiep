@@ -36,16 +36,10 @@ local SandboxArena = require("./src/Gamemodes/Sandbox")
 math.randomseed(os.time())
 
 local ROOT = process.cwd()
-local CLIENT_DIR = pathJoin(ROOT, "client")
 local connections = {}
 
 local MIME = {
-    [".html"] = "text/html; charset=utf-8",
-    [".js"] = "application/javascript; charset=utf-8",
-    [".json"] = "application/json; charset=utf-8",
-    [".css"] = "text/css; charset=utf-8",
-    [".png"] = "image/png",
-    [".ico"] = "image/x-icon"
+    [".json"] = "application/json; charset=utf-8"
 }
 
 local function getExt(p)
@@ -132,23 +126,7 @@ local function handleHttp(req, socket)
         return handleApi(pathname, socket)
     end
 
-    if not config.enableClient then
-        writeHttp(socket, "404 Not Found", { ["Content-Type"] = "text/plain" }, "Not Found")
-        return
-    end
-
-    local map = {
-        ["/"] = "index.html",
-        ["/loader.js"] = "loader.js",
-        ["/input.js"] = "input.js",
-        ["/dma.js"] = "dma.js",
-        ["/config.js"] = "config.js"
-    }
-    local file = map[pathname]
-    if file then
-        return sendFile(socket, pathJoin(CLIENT_DIR, file))
-    end
-    sendFile(socket, pathJoin(CLIENT_DIR, "404.html"), "404 Not Found")
+    writeHttp(socket, "404 Not Found", { ["Content-Type"] = "text/plain" }, "Not Found")
 end
 
 local function peerIp(socket)

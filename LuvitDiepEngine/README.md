@@ -50,7 +50,7 @@ See `src/config.lua`. Useful environment variables:
 - `SERVER_INFO` — host id sent to clients
 - `DEV_PASSWORD_HASH` — SHA-256 hex of the developer password
 
-`enableClient` is off. HTTP still serves `/api/*` for tank lists and server info. The leftover files in `client/` are the old diepcustom WASM loader and are not used.
+`enableApi` is on. HTTP serves `/api/*` for tank lists, servers, and changelog. The frontend is LoveDiepClient, not a browser page.
 
 ## License
 
