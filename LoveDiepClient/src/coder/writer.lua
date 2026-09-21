@@ -1,6 +1,6 @@
 local ffi = require("ffi")
 local bit = require("bit")
-local class = require("src.class")
+local class = require("src.lib.class")
 
 pcall(function()
     ffi.cdef[[

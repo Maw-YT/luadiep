@@ -1,4 +1,4 @@
-local json = require("src.json")
+local json = require("src.lib.json")
 
 local Settings = {
     style = "new",

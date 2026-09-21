@@ -1,4 +1,4 @@
-local Game = require("src.game")
+local Game = require("src.app.game")
 
 local game
 

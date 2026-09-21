@@ -1,25 +1,14 @@
 local Render = require("src.render")
-local Settings = require("src.settings")
+local Layout = require("src.ui.layout")
 
 local TankTree = {}
 
--- Match Hud.metrics without requiring hud (hud already requires this file).
-local GUI_W, GUI_H = 1280, 720
-
 local function metrics()
-    local sw, sh = love.graphics.getDimensions()
-    local scale = math.min(sw / GUI_W, sh / GUI_H)
-    local ui = tonumber(Settings.hudScale) or 1
-    if ui < 0.5 then ui = 0.5 end
-    if ui > 2 then ui = 2 end
-    scale = scale * ui
-    if scale <= 0 then scale = 1 end
-    return scale, 0, 0, sw / scale, sh / scale
+    return Layout.metrics()
 end
 
 local function screenToGui(x, y)
-    local scale, ox, oy = metrics()
-    return (x - ox) / scale, (y - oy) / scale
+    return Layout.screenToGui(x, y)
 end
 
 local NODE_W = 92

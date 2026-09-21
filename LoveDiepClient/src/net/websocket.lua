@@ -1,5 +1,5 @@
 local bit = require("bit")
-local class = require("src.class")
+local class = require("src.lib.class")
 local Tcp = require("src.net.tcp")
 local Url = require("src.net.url")
 

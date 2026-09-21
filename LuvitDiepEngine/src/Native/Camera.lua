@@ -218,8 +218,16 @@ function ClientCamera:updateView(tick)
     local w = self.client:write():u8(ClientBound.Update):vu(tick)
     local deletes, updates, creations = {}, {}, {}
     local fov = self.cameraData.values.FOV
-    local width = (1920 / fov) / 1.5
-    local height = (1080 / fov) / 1.5
+    if not fov or fov <= 0.01 then fov = 0.35 end
+    local viewW = 1920 / fov
+    local viewH = 1080 / fov
+    local client = self.client
+    if client and client.viewW and client.viewW > 1 then viewW = client.viewW end
+    if client and client.viewH and client.viewH > 1 then viewH = client.viewH end
+    -- Same slack as diepcustom: half-extent is full view / 1.5, so the
+    -- network box is a bit larger than the on-screen frustum.
+    local width = viewW / 1.5
+    local height = viewH / 1.5
     local entitiesNearRange = self.game.entities.collisionManager:retrieve(
         self.cameraData.values.cameraX, self.cameraData.values.cameraY, width, height
     )

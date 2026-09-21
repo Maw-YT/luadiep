@@ -1,5 +1,5 @@
 local bit = require("bit")
-local class = require("src.class")
+local class = require("src.lib.class")
 local Decode = require("src.protocol.decode")
 local Enums = require("src.protocol.enums")
 

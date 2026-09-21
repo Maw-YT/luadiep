@@ -64,6 +64,8 @@ function Client:init(ws, game, ipAddress)
     self.pendingAchievements = {}
     self.connectTick = game.tick
     self.lastPingTick = game.tick
+    self.viewW = nil
+    self.viewH = nil
     game:addClient(self)
 end
 
@@ -199,8 +201,11 @@ function Client:handleIncoming(header, data)
         self.inputs.flags = flags
         self.inputs.cachedFlags = 0
         local fov = camera.cameraData.values.FOV
-        local width = (1920 / fov) / 2
-        local height = (1080 / fov) / 2
+        if not fov or fov <= 0.01 then fov = 0.35 end
+        local viewW = self.viewW or (1920 / fov)
+        local viewH = self.viewH or (1080 / fov)
+        local width = viewW * 0.5
+        local height = viewH * 0.5
         local minX = camera.cameraData.values.cameraX - width
         local maxX = camera.cameraData.values.cameraX + width
         local minY = camera.cameraData.values.cameraY - height
@@ -208,6 +213,22 @@ function Client:handleIncoming(header, data)
         local mouseX = r:vf()
         local mouseY = r:vf()
         if not util.isFinite(mouseX) or not util.isFinite(mouseY) then return end
+        if r:remaining() > 0 then
+            local nextW = r:vf()
+            local nextH = r:vf()
+            if util.isFinite(nextW) and util.isFinite(nextH) and nextW > 1 and nextH > 1 then
+                local maxW = (1920 / fov) * 4
+                local maxH = (1080 / fov) * 4
+                if nextW > maxW then nextW = maxW end
+                if nextH > maxH then nextH = maxH end
+                self.viewW, self.viewH = nextW, nextH
+                width, height = nextW * 0.5, nextH * 0.5
+                minX = camera.cameraData.values.cameraX - width
+                maxX = camera.cameraData.values.cameraX + width
+                minY = camera.cameraData.values.cameraY - height
+                maxY = camera.cameraData.values.cameraY + height
+            end
+        end
         self.inputs.mouse.x = util.constrain(mouseX, minX, maxX)
         self.inputs.mouse.y = util.constrain(mouseY, minY, maxY)
         local player = camera.cameraData.values.player

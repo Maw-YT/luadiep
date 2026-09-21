@@ -13,8 +13,12 @@ function Encode.init(password)
     return packet():u8(Enums.ServerBound.Init):stringNT(config.buildHash):stringNT(password or ""):write()
 end
 
-function Encode.input(flags, mouseX, mouseY)
-    return packet():u8(Enums.ServerBound.Input):vu(flags):vf(mouseX):vf(mouseY):write()
+function Encode.input(flags, mouseX, mouseY, viewW, viewH)
+    local w = packet():u8(Enums.ServerBound.Input):vu(flags):vf(mouseX):vf(mouseY)
+    if viewW and viewH then
+        w:vf(viewW):vf(viewH)
+    end
+    return w:write()
 end
 
 function Encode.spawn(name)

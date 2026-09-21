@@ -1,6 +1,6 @@
 local Encode = require("src.protocol.encode")
 local Render = require("src.render")
-local json = require("src.json")
+local json = require("src.lib.json")
 local HttpGet = require("src.net.http")
 local Url = require("src.net.url")
 local config = require("src.config")

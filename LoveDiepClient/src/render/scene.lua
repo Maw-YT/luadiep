@@ -1,436 +1,12 @@
 local bit = require("bit")
 local Enums = require("src.protocol.enums")
 
-local Render = {}
-Render._scale = 1
-Render._camX = 0
-Render._camY = 0
-Render._fov = 0.35
-Render._style = "new"
-Render._innerShadow = 0.15
-
-function Render.setStyle(style)
-    local nextStyle = "new"
-    if style == "old" then
-        nextStyle = "old"
-    elseif style == "shaded" then
-        nextStyle = "shaded"
-    end
-    if Render._style ~= nextStyle then
-        Render._style = nextStyle
-        Render.invalidateIconCache()
-    end
-end
-
-function Render.setInnerShadow(coverage)
-    coverage = tonumber(coverage) or 0.15
-    if coverage ~= coverage then coverage = 0.15 end
-    if coverage < 0 then coverage = 0 end
-    if coverage > 1 then coverage = 1 end
-    if Render._innerShadow ~= coverage then
-        Render._innerShadow = coverage
-        Render.invalidateIconCache()
-    end
-end
-
+return function(Render)
 local StyleFlags = Enums.StyleFlags
 local PhysicsFlags = Enums.PhysicsFlags
 local PositionFlags = Enums.PositionFlags
 local HealthFlags = Enums.HealthFlags
 local NameFlags = Enums.NameFlags
-local CameraFlags = Enums.CameraFlags
-
-local function hex(c, a)
-    c = tonumber(c) or 0
-    if c < 0 then c = 0 end
-    local r = bit.rshift(bit.band(c, 0xFF0000), 16) / 255
-    local g = bit.rshift(bit.band(c, 0x00FF00), 8) / 255
-    local b = bit.band(c, 0x0000FF) / 255
-    return r, g, b, a or 1
-end
-
-local function darker(c, f)
-    f = f or 0.62
-    c = tonumber(c) or 0
-    if c < 0 then c = 0 end
-    local r = math.max(0, math.floor(bit.rshift(bit.band(c, 0xFF0000), 16) * f))
-    local g = math.max(0, math.floor(bit.rshift(bit.band(c, 0x00FF00), 8) * f))
-    local b = math.max(0, math.floor(bit.band(c, 0x0000FF) * f))
-    return r * 65536 + g * 256 + b
-end
-
-local function mixHex(a, b, t)
-    t = math.max(0, math.min(1, t or 0))
-    a = tonumber(a) or 0
-    b = tonumber(b) or 0
-    local ar = bit.rshift(bit.band(a, 0xFF0000), 16)
-    local ag = bit.rshift(bit.band(a, 0x00FF00), 8)
-    local ab = bit.band(a, 0x0000FF)
-    local br = bit.rshift(bit.band(b, 0xFF0000), 16)
-    local bg = bit.rshift(bit.band(b, 0x00FF00), 8)
-    local bb = bit.band(b, 0x0000FF)
-    local r = math.floor(ar + (br - ar) * t)
-    local g = math.floor(ag + (bg - ag) * t)
-    local bl = math.floor(ab + (bb - ab) * t)
-    return r * 65536 + g * 256 + bl
-end
-
-local function rgbToHsv(r, g, b)
-    local maxv = math.max(r, g, b)
-    local minv = math.min(r, g, b)
-    local d = maxv - minv
-    local h = 0
-    if d > 1e-5 then
-        if maxv == r then
-            h = ((g - b) / d) % 6
-        elseif maxv == g then
-            h = (b - r) / d + 2
-        else
-            h = (r - g) / d + 4
-        end
-        h = h / 6
-        if h < 0 then h = h + 1 end
-    end
-    return h, (maxv <= 0 and 0 or d / maxv), maxv
-end
-
-local function hsvToRgb(h, s, v)
-    h = h % 1
-    if h < 0 then h = h + 1 end
-    s = math.max(0, math.min(1, s))
-    v = math.max(0, math.min(1.2, v))
-    local i = math.floor(h * 6)
-    local f = h * 6 - i
-    local p = v * (1 - s)
-    local q = v * (1 - f * s)
-    local t = v * (1 - (1 - f) * s)
-    i = i % 6
-    if i == 0 then return v, t, p end
-    if i == 1 then return q, v, p end
-    if i == 2 then return p, v, t end
-    if i == 3 then return p, q, v end
-    if i == 4 then return t, p, v end
-    return v, p, q
-end
-
-local function beamTint(fill, u, time, layer)
-    local r, g, b = hex(fill)
-    local h, s, v = rgbToHsv(r, g, b)
-    if s < 0.18 then
-        s = 0.55
-        v = math.max(v, 0.7)
-    end
-    local wobble = math.sin(u * 13.7 + time * 7.4 + layer * 1.9) * 0.075
-        + math.sin(u * 4.6 - time * 4.3 + layer) * 0.05
-    h = h + wobble + layer * 0.04
-    s = math.min(1, math.max(0.28, s * 0.82 + 0.22 + 0.2 * math.sin(time * 5.2 + u * 9 + layer * 2)))
-    v = math.min(1.15, 0.55 + v * (0.5 + 0.42 * (0.5 + 0.5 * math.sin(time * 8.5 + u * 12 + layer))))
-    return hsvToRgb(h, s, v)
-end
-
--- hit=1 red, hit=0.5 white, hit=0 original color
-local function applyHit(fill, hit)
-    if not hit or hit <= 0 then return fill end
-    if hit > 0.5 then
-        return mixHex(0xFFFFFF, 0xF14E54, (hit - 0.5) * 2)
-    end
-    return mixHex(fill, 0xFFFFFF, hit / 0.5)
-end
-
-local function colorOf(e)
-    local id = (e.style and e.style.color) or 0
-    return Enums.ColorsHexCode[id] or 0x555555
-end
-
-local function flagged(style, flag)
-    return style and bit.band(style.flags or 0, flag) ~= 0
-end
-
-function Render.safeText(s)
-    if s == nil then return "" end
-    if type(s) ~= "string" then s = tostring(s) end
-    local n = #s
-    if n == 0 then return s end
-    if not s:find("%c") then
-        return s
-    end
-    local out, o = {}, 0
-    local i = 1
-    while i <= n do
-        local c = s:byte(i)
-        if not c or c == 0 then
-            break
-        elseif c < 32 then
-            i = i + 1
-        elseif c < 128 then
-            o = o + 1
-            out[o] = string.char(c)
-            i = i + 1
-        elseif c >= 194 and c <= 223 and i + 1 <= n then
-            local c2 = s:byte(i + 1)
-            if c2 and c2 >= 128 and c2 <= 191 then
-                o = o + 1
-                out[o] = s:sub(i, i + 1)
-                i = i + 2
-            else
-                i = i + 1
-            end
-        elseif c >= 224 and c <= 239 and i + 2 <= n then
-            local c2, c3 = s:byte(i + 1), s:byte(i + 2)
-            if c2 and c3 and c2 >= 128 and c2 <= 191 and c3 >= 128 and c3 <= 191
-                and not (c == 224 and c2 < 160) and not (c == 237 and c2 >= 160) then
-                o = o + 1
-                out[o] = s:sub(i, i + 2)
-                i = i + 3
-            else
-                i = i + 1
-            end
-        elseif c >= 240 and c <= 244 and i + 3 <= n then
-            local c2, c3, c4 = s:byte(i + 1), s:byte(i + 2), s:byte(i + 3)
-            if c2 and c3 and c4 and c2 >= 128 and c2 <= 191 and c3 >= 128 and c3 <= 191 and c4 >= 128 and c4 <= 191
-                and not (c == 240 and c2 < 144) and not (c == 244 and c2 >= 144) then
-                o = o + 1
-                out[o] = s:sub(i, i + 3)
-                i = i + 4
-            else
-                i = i + 1
-            end
-        else
-            i = i + 1
-        end
-    end
-    return table.concat(out)
-end
-
-local function outlineOffsets(width)
-    width = math.max(1, math.floor((width or 2) + 0.5))
-    local pts, n = {}, 0
-    local max2 = width * width + width
-    for ox = -width, width do
-        for oy = -width, width do
-            if (ox ~= 0 or oy ~= 0) and ox * ox + oy * oy <= max2 then
-                n = n + 1
-                pts[n] = { ox, oy }
-            end
-        end
-    end
-    return pts
-end
-
-local outlineCache = {}
-local function outlinePts(width)
-    width = math.max(1, math.floor((width or 2) + 0.5))
-    local cached = outlineCache[width]
-    if cached then return cached end
-    cached = outlineOffsets(width)
-    outlineCache[width] = cached
-    return cached
-end
-
-local fontCache = {}
-local function fontAt(size)
-    size = math.max(8, math.floor(size + 0.5))
-    local f = fontCache[size]
-    if f then return f end
-    f = love.graphics.newFont(size)
-    fontCache[size] = f
-    return f
-end
-
-local function currentScale()
-    local ok, x1, y1, x2, y2 = pcall(function()
-        local a, b = love.graphics.transformPoint(0, 0)
-        local c, d = love.graphics.transformPoint(1, 0)
-        return a, b, c, d
-    end)
-    if not ok then return 1 end
-    local dx, dy = x2 - x1, y2 - y1
-    local s = math.sqrt(dx * dx + dy * dy)
-    if s ~= s or s < 1e-4 then return 1 end
-    return s
-end
-
-local function crisp(baseSize, draw)
-    local s = currentScale()
-    local prev = love.graphics.getFont()
-    love.graphics.setFont(fontAt((baseSize or 16) * s))
-    love.graphics.push()
-    love.graphics.scale(1 / s, 1 / s)
-    draw(s)
-    love.graphics.pop()
-    if prev then
-        love.graphics.setFont(prev)
-    end
-end
-
-function Render.print(text, x, y)
-    text = Render.safeText(text)
-    if text == "" then return end
-    crisp(16, function(s)
-        love.graphics.print(text, x * s, y * s)
-    end)
-end
-
-function Render.printf(text, x, y, limit, align)
-    text = Render.safeText(text)
-    if text == "" then return end
-    crisp(16, function(s)
-        love.graphics.printf(text, x * s, y * s, limit * s, align)
-    end)
-end
-
-function Render.outlinedPrintf(text, x, y, limit, align, width)
-    text = Render.safeText(text)
-    if text == "" then return end
-    local r, g, b, a = love.graphics.getColor()
-    crisp(16, function(s)
-        local ox, oy, lim = x * s, y * s, limit * s
-        local w = math.max(1, math.min(8, math.floor((width or 2) * s + 0.5)))
-        local pts = outlinePts(w)
-        love.graphics.setColor(0, 0, 0, a)
-        for i = 1, #pts do
-            love.graphics.printf(text, ox + pts[i][1], oy + pts[i][2], lim, align)
-        end
-        love.graphics.setColor(r, g, b, a)
-        love.graphics.printf(text, ox, oy, lim, align)
-    end)
-end
-
-function Render.outlinedPrint(text, x, y, width)
-    text = Render.safeText(text)
-    if text == "" then return end
-    local r, g, b, a = love.graphics.getColor()
-    crisp(16, function(s)
-        local ox, oy = x * s, y * s
-        local w = math.max(1, math.min(8, math.floor((width or 2) * s + 0.5)))
-        local pts = outlinePts(w)
-        love.graphics.setColor(0, 0, 0, a)
-        for i = 1, #pts do
-            love.graphics.print(text, ox + pts[i][1], oy + pts[i][2])
-        end
-        love.graphics.setColor(r, g, b, a)
-        love.graphics.print(text, ox, oy)
-    end)
-end
-
--- Horizontal bar fill whose leading edge is a cosine that travels up/down.
-function Render.drawWaveFill(x, y, w, h, ratio)
-    ratio = tonumber(ratio) or 0
-    if ratio ~= ratio or ratio <= 0 or w < 0.4 or h < 0.4 then
-        return
-    end
-    if ratio > 1 then ratio = 1 end
-    local fillW = w * ratio
-    if fillW < 0.4 then return end
-    local time = love.timer.getTime() or 0
-    local seed = x * 0.017 + y * 0.029 + w * 0.011 + h * 0.007
-    local t = time * (4.4 + 1.35 * math.sin(seed * 1.8))
-    local amp = h * 0.30
-    if amp > 7 then amp = 7 end
-    if amp < 1.6 then amp = math.min(1.6, h * 0.42) end
-    amp = amp * (0.78 + 0.22 * math.cos(time * 0.37 + seed * 2.1))
-    local steps = math.max(10, math.min(32, math.floor(h * 1.25 + 0.5)))
-    local left, right = x, x + w
-    local twoPi = math.pi * 2
-    local function edge(u)
-        local ripple =
-            0.52 * math.cos(u * twoPi + t + seed)
-            + 0.27 * math.cos(u * twoPi * 2.17 + t * 1.43 + seed * 1.9)
-            + 0.14 * math.cos(u * twoPi * 3.61 - t * 0.81 + seed * 2.6)
-            + 0.10 * math.cos(u * twoPi * 5.07 + t * 2.11 + seed * 0.7)
-        return left + fillW + ripple * amp
-    end
-    for i = 0, steps - 1 do
-        local u0 = i / steps
-        local u1 = (i + 1) / steps
-        local y0 = y + h * u0
-        local y1 = y + h * u1
-        local x0 = edge(u0)
-        local x1 = edge(u1)
-        if x0 < left then x0 = left end
-        if x1 < left then x1 = left end
-        if x0 > right then x0 = right end
-        if x1 > right then x1 = right end
-        love.graphics.polygon("fill", left, y0, x0, y0, x1, y1, left, y1)
-    end
-end
-
-local function localPos(e)
-    local pos = e.position
-    return (e.ix or (pos and pos.x) or 0),
-        (e.iy or (pos and pos.y) or 0),
-        (e.ia or (pos and pos.angle) or 0),
-        (pos and pos.flags) or 0
-end
-
-function Render.view(world)
-    local cam = world:cameraValues()
-    local fov = (cam and cam.FOV) or 0.35
-    if fov <= 0.01 then fov = 0.35 end
-    local flags = (cam and cam.flags) or 0
-    local player = world:player()
-    if player and player.position then
-        -- Follow the tank unless the server is explicitly driving the camera (e.g. predator zoom).
-        if bit.band(flags, CameraFlags.usesCameraCoords) == 0 then
-            world:ensureWorld(player)
-            return player.worldX or 0, player.worldY or 0, fov
-        end
-    end
-    return (cam and cam.cameraX) or 0, (cam and cam.cameraY) or 0, fov
-end
-
-local function applyCamera(camX, camY, fov)
-    local sw, sh = love.graphics.getDimensions()
-    local viewW = 1920 / fov
-    local viewH = 1080 / fov
-    local scale = math.min(sw / viewW, sh / viewH)
-    love.graphics.translate(sw / 2, sh / 2)
-    love.graphics.scale(scale, scale)
-    love.graphics.translate(-camX, -camY)
-    return scale, viewW, viewH
-end
-
-local function pixel()
-    return 1 / math.max(Render._scale or 1, 0.0001)
-end
-
-local function drawGrid(camX, camY, viewW, viewH)
-    local cell = 50
-    local padX, padY = viewW * 0.6, viewH * 0.6
-    local x0 = math.floor((camX - padX) / cell) * cell
-    local y0 = math.floor((camY - padY) / cell) * cell
-    love.graphics.setColor(hex(0xC4C4C4))
-    love.graphics.setLineWidth(pixel())
-    love.graphics.setLineStyle("rough")
-    for x = x0, camX + padX, cell do
-        love.graphics.line(x, camY - padY, x, camY + padY)
-    end
-    for y = y0, camY + padY, cell do
-        love.graphics.line(camX - padX, y, camX + padX, y)
-    end
-    love.graphics.setLineStyle("smooth")
-end
-
-local function drawArenaFloor(arena)
-    if not arena then return end
-    local l, t, r, b = arena.leftX, arena.topY, arena.rightX, arena.bottomY
-    if not l then return end
-    love.graphics.setColor(hex(0xB0B0B0))
-    love.graphics.rectangle("fill", l - 8000, t - 8000, (r - l) + 16000, (b - t) + 16000)
-    love.graphics.setColor(hex(0xCDCDCD))
-    love.graphics.rectangle("fill", l, t, r - l, b - t)
-end
-
-local function drawArenaBorder(arena)
-    if not arena then return end
-    local l, t, r, b = arena.leftX, arena.topY, arena.rightX, arena.bottomY
-    if not l then return end
-    love.graphics.setLineStyle("smooth")
-    love.graphics.setLineJoin("bevel")
-    love.graphics.setColor(hex(0x555555, 0.9))
-    love.graphics.setLineWidth(math.max(6, 8 * pixel()))
-    love.graphics.rectangle("line", l, t, r - l, b - t)
-end
 
 local polyCache = {}
 local function polyRegular(sides, size, star)
@@ -493,7 +69,7 @@ end
 
 local function strokeHex(fill)
     if Render._style == "old" then return 0x000000 end
-    return darker(fill)
+    return Render.darker(fill)
 end
 
 -- Screen-space light (top-left) expressed in the current local transform.
@@ -571,18 +147,68 @@ local triMesh, meshVerts, meshN = nil, {}, 0
 local MESH_FORMAT = {
     { "VertexPosition", "float", 3 },
     { "VertexColor", "byte", 4 },
-    { "VertexTexCoord", "float", 2 }
+    { "VertexNormal", "float", 3 }
 }
+local MODE_SPHERE, MODE_CYL, MODE_RAW, MODE_FLAT = 0, 1, 2, 3
 local depthShader
+local sphereMesh, cylMesh
+local prismCache, prismCacheN, PRISM_CACHE_MAX = {}, 0, 384
 do
     local src = [[
         varying float vDepth;
         varying float vNd;
+        uniform vec3 uOrigin;
+        uniform vec2 uRot;
+        uniform vec3 uCam;
+        uniform float uFocal;
+        uniform float uDepthFar;
+        uniform float uDepthBias;
+        uniform vec3 uLight;
+        uniform vec2 uCel;
+        uniform float uMode;
+        uniform float uRadius;
+        uniform vec4 uCyl;
+        uniform vec2 uCylOff;
         #ifdef VERTEX
+        ATTRIBUTE_NORMAL
         vec4 position(mat4 transform_projection, vec4 vertex_position) {
-            vDepth = vertex_position.z;
-            vNd = VertexTexCoord.x;
-            return transform_projection * vec4(vertex_position.xy, 0.0, 1.0);
+            vec3 local = vertex_position.xyz;
+            vec3 nrm = VertexNormal;
+            if (uMode > 2.5) {
+                vDepth = clamp(local.z + uDepthBias, 0.001, 0.999);
+                vNd = 2.0;
+                return transform_projection * vec4(local.xy, 0.0, 1.0);
+            }
+            if (uMode > 0.5 && uMode < 1.5) {
+                float u = local.x;
+                float r = mix(uCyl.z, uCyl.w, u);
+                local = vec3(mix(uCyl.x, uCyl.y, u), uCylOff.x + local.y * r, uCylOff.y + local.z * r);
+                if (abs(nrm.x) < 0.5) {
+                    float L = uCyl.y - uCyl.x;
+                    float sl = (uCyl.z - uCyl.w) / max(abs(L), 0.0001);
+                    float den = sqrt(1.0 + sl * sl);
+                    nrm = vec3(sl / den, nrm.y / den, nrm.z / den);
+                }
+            } else if (uMode < 0.5) {
+                local *= uRadius;
+            }
+            float rx = local.x * uRot.x - local.y * uRot.y;
+            float ry = local.x * uRot.y + local.y * uRot.x;
+            vec3 world = vec3(uOrigin.x + rx, uOrigin.y + ry, local.z + uOrigin.z);
+            float dz = max(uCam.z - world.z, 12.0);
+            float f = uFocal / dz;
+            vec2 screen = vec2(
+                uCam.x + (world.x - uCam.x) * f - uOrigin.x,
+                uCam.y + (world.y - uCam.y) * f - uOrigin.y
+            );
+            vDepth = clamp(dz * uDepthFar + uDepthBias, 0.001, 0.999);
+            if (length(nrm) > 1.5) {
+                vNd = 2.0;
+            } else {
+                vec3 nw = vec3(nrm.x * uRot.x - nrm.y * uRot.y, nrm.x * uRot.y + nrm.y * uRot.x, nrm.z);
+                vNd = dot(nw, uLight);
+            }
+            return transform_projection * vec4(screen, 0.0, 1.0);
         }
         #endif
         #ifdef PIXEL
@@ -590,22 +216,151 @@ do
             gl_FragDepth = vDepth;
             float t = 1.0;
             if (vNd < 1.5) {
-                if (vNd > 0.12) {
+                if (vNd > uCel.x) {
                     t = 1.0;
                 } else {
-                    t = 0.82;
+                    t = uCel.y;
                 }
             }
             return vec4(color.rgb * t, color.a);
         }
         #endif
     ]]
-    local ok, sh = pcall(love.graphics.newShader, src)
-    if ok then
-        depthShader = sh
-    else
-        print("[LoveDiepClient] 3D depth shader: " .. tostring(sh))
+    local attempts = {
+        src:gsub("ATTRIBUTE_NORMAL", "attribute vec3 VertexNormal;"),
+        src:gsub("ATTRIBUTE_NORMAL", "")
+    }
+    local lastErr
+    for i = 1, #attempts do
+        local ok, sh = pcall(love.graphics.newShader, attempts[i])
+        if ok then
+            depthShader = sh
+            lastErr = nil
+            break
+        end
+        lastErr = sh
     end
+    if lastErr then
+        print("[LoveDiepClient] 3D depth shader: " .. tostring(lastErr))
+    end
+end
+
+local function addTri(verts, ax, ay, az, anx, any, anz, bx, by, bz, bnx, bny, bnz, cx, cy, cz, cnx, cny, cnz)
+    verts[#verts + 1] = { ax, ay, az, 1, 1, 1, 1, anx, any, anz }
+    verts[#verts + 1] = { bx, by, bz, 1, 1, 1, 1, bnx, bny, bnz }
+    verts[#verts + 1] = { cx, cy, cz, 1, 1, 1, 1, cnx, cny, cnz }
+end
+
+local function newStaticMesh(verts)
+    if not verts or #verts < 3 then return nil end
+    return love.graphics.newMesh(MESH_FORMAT, verts, "triangles", "static")
+end
+
+do
+    local verts = {}
+    for st = SPHERE_STACKS - 1, 0, -1 do
+        local outer, inner = sphereLat[st + 1], sphereLat[st]
+        for i = 0, SPHERE_SLICES - 1 do
+            local a, b = outer[i], outer[i + 1]
+            local c, d = inner[i], inner[i + 1]
+            if st == SPHERE_STACKS - 1 then
+                addTri(verts,
+                    c[1], c[2], c[3], c[1], c[2], c[3],
+                    d[1], d[2], d[3], d[1], d[2], d[3],
+                    a[1], a[2], a[3], a[1], a[2], a[3])
+            elseif st == 0 then
+                addTri(verts,
+                    a[1], a[2], a[3], a[1], a[2], a[3],
+                    b[1], b[2], b[3], b[1], b[2], b[3],
+                    c[1], c[2], c[3], c[1], c[2], c[3])
+            else
+                addTri(verts,
+                    a[1], a[2], a[3], a[1], a[2], a[3],
+                    b[1], b[2], b[3], b[1], b[2], b[3],
+                    c[1], c[2], c[3], c[1], c[2], c[3])
+                addTri(verts,
+                    b[1], b[2], b[3], b[1], b[2], b[3],
+                    d[1], d[2], d[3], d[1], d[2], d[3],
+                    c[1], c[2], c[3], c[1], c[2], c[3])
+            end
+        end
+    end
+    sphereMesh = newStaticMesh(verts)
+end
+
+do
+    local verts = {}
+    for i = 0, CYL_SEGS - 1 do
+        local a, b = cylRing[i], cylRing[i + 1]
+        addTri(verts,
+            0, a[1], a[2], 0, a[1], a[2],
+            1, a[1], a[2], 0, a[1], a[2],
+            0, b[1], b[2], 0, b[1], b[2])
+        addTri(verts,
+            1, a[1], a[2], 0, a[1], a[2],
+            1, b[1], b[2], 0, b[1], b[2],
+            0, b[1], b[2], 0, b[1], b[2])
+        addTri(verts,
+            0, 0, 0, -1, 0, 0,
+            0, a[1], a[2], -1, 0, 0,
+            0, b[1], b[2], -1, 0, 0)
+        addTri(verts,
+            1, 0, 0, 1, 0, 0,
+            1, b[1], b[2], 1, 0, 0,
+            1, a[1], a[2], 1, 0, 0)
+    end
+    cylMesh = newStaticMesh(verts)
+end
+
+local _shadeOn = false
+local function sendU(name, value)
+    if not depthShader then return end
+    pcall(depthShader.send, depthShader, name, value)
+end
+
+local function sendCam()
+    sendU("uCam", { _camX, _camY, _camZ })
+    sendU("uFocal", _focal)
+    sendU("uDepthFar", DEPTH_FAR)
+    sendU("uLight", { _lx, _ly, _lz })
+    sendU("uCel", { CEL_THRESH, CEL_SHADOW })
+end
+
+local function sendObj()
+    sendU("uOrigin", { _ox, _oy, _oz })
+    sendU("uRot", { _angC, _angS })
+    sendU("uDepthBias", _depthBias)
+end
+
+local function bindShade()
+    if not depthShader then return end
+    if not _shadeOn then
+        love.graphics.setShader(depthShader)
+        _shadeOn = true
+        sendCam()
+    end
+    sendObj()
+end
+
+local function unbindShade()
+    if _shadeOn then
+        love.graphics.setShader()
+        _shadeOn = false
+    end
+end
+
+local function setMode(mode, radius, cyl, off)
+    sendU("uMode", mode or MODE_RAW)
+    sendU("uRadius", radius or 1)
+    sendU("uCyl", cyl or { 0, 1, 1, 1 })
+    sendU("uCylOff", off or { 0, 0 })
+end
+
+local function drawGpuMesh(mesh, mode, radius, cyl, off)
+    if not mesh then return end
+    bindShade()
+    setMode(mode, radius, cyl, off)
+    love.graphics.draw(mesh)
 end
 
 local function syncCamera3D(viewH)
@@ -670,7 +425,7 @@ local function litCol(fill, nx, ny, nz, opacity)
     local nwx = nx * _angC - ny * _angS
     local nwy = nx * _angS + ny * _angC
     local nd = nwx * _lx + nwy * _ly + nz * _lz
-    local r, g, b = hex(fill)
+    local r, g, b = Render.hex(fill)
     if not depthShader then
         local t = nd > CEL_THRESH and 1 or CEL_SHADOW
         return r * t, g * t, b * t, opacity, 2
@@ -784,26 +539,26 @@ local function meshReset()
     meshN = 0
 end
 
-local function meshPush(x, y, z, r, g, b, a, nd)
+local function meshPush(x, y, z, r, g, b, a, nx, ny, nz)
     meshN = meshN + 1
     local v = meshVerts[meshN]
-    nd = nd or 2
+    nx, ny, nz = nx or 0, ny or 0, nz or 2
     if v then
-        v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9] = x, y, z, r, g, b, a, nd, 0
+        v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10] = x, y, z, r, g, b, a, nx, ny, nz
     else
-        meshVerts[meshN] = { x, y, z, r, g, b, a, nd, 0 }
+        meshVerts[meshN] = { x, y, z, r, g, b, a, nx, ny, nz }
     end
 end
 
-local function meshTri(x1, y1, z1, r1, g1, b1, a1, x2, y2, z2, r2, g2, b2, a2, x3, y3, z3, r3, g3, b3, a3, n1, n2, n3)
-    meshPush(x1, y1, z1, r1, g1, b1, a1, n1)
-    meshPush(x2, y2, z2, r2, g2, b2, a2, n2)
-    meshPush(x3, y3, z3, r3, g3, b3, a3, n3)
+local function meshTri(x1, y1, z1, r1, g1, b1, a1, x2, y2, z2, r2, g2, b2, a2, x3, y3, z3, r3, g3, b3, a3, n1x, n1y, n1z, n2x, n2y, n2z, n3x, n3y, n3z)
+    meshPush(x1, y1, z1, r1, g1, b1, a1, n1x, n1y, n1z)
+    meshPush(x2, y2, z2, r2, g2, b2, a2, n2x, n2y, n2z)
+    meshPush(x3, y3, z3, r3, g3, b3, a3, n3x, n3y, n3z)
 end
 
 local compactVerts = {}
 
-local function meshFlush()
+local function meshFlush(mode)
     if meshN < 3 then
         meshN = 0
         return
@@ -819,14 +574,7 @@ local function meshFlush()
     end
     triMesh:setVertices(compactVerts)
     triMesh:setDrawRange(1, meshN)
-    if depthShader then
-        love.graphics.setShader(depthShader)
-    end
-    love.graphics.setColor(1, 1, 1, 1)
-    love.graphics.draw(triMesh)
-    if depthShader then
-        love.graphics.setShader()
-    end
+    drawGpuMesh(triMesh, mode or MODE_RAW)
     meshN = 0
 end
 
@@ -857,22 +605,18 @@ end
 local function meshLitTri(ax, ay, az, anx, any, anz,
                           bx, by, bz, bnx, bny, bnz,
                           cx, cy, cz, cnx, cny, cnz,
-                          fill, opacity, specPow, wrap)
-    local axp, ayp, azp = proj(ax, ay, az)
-    local bxp, byp, bzp = proj(bx, by, bz)
-    local cxp, cyp, czp = proj(cx, cy, cz)
-    hullAdd(axp, ayp, azp)
-    hullAdd(bxp, byp, bzp)
-    hullAdd(cxp, cyp, czp)
-    local ar, ag, ab, aa, na = litCol(fill, anx, any, anz, opacity)
-    local br, bg, bb, ba, nb = litCol(fill, bnx, bny, bnz, opacity)
-    local cr, cg, cb, ca, nc = litCol(fill, cnx, cny, cnz, opacity)
-    meshTri(axp, ayp, azp, ar, ag, ab, aa, bxp, byp, bzp, br, bg, bb, ba, cxp, cyp, czp, cr, cg, cb, ca, na, nb, nc)
+                          fill, opacity)
+    local r, g, b, a = Render.hex(fill, opacity)
+    meshTri(
+        ax, ay, az, r, g, b, a,
+        bx, by, bz, r, g, b, a,
+        cx, cy, cz, r, g, b, a,
+        anx, any, anz, bnx, bny, bnz, cnx, cny, cnz)
 end
 
--- Outer silhouette ring. Depth sits at the back of this mesh so closer
--- parts (barrels, other tanks) occlude it; width is fully outside the fill.
-local function strokeLoop(loop, border, opacity, stroke, append)
+-- 2D silhouette ring in already-projected XY. Depth sits just behind this
+-- mesh so nearer parts (barrels, other tanks) occlude it.
+local function strokeLoop(loop, border, opacity, stroke)
     if not loop or #loop < 3 then return end
     local w = math.max(tonumber(stroke) or 3, 0.8)
     local farZ = 0.001
@@ -882,13 +626,11 @@ local function strokeLoop(loop, border, opacity, stroke, append)
     end
     local z = math.min(0.999, farZ + 0.0002)
     local outer = outsetPoly(loop, w)
-    local r, g, b, a = hex(border, opacity)
+    local r, g, b, a = Render.hex(border, opacity)
     if Render._style == "shaded" then
         love.graphics.setDepthMode("lequal", true)
     end
-    if not append then
-        meshReset()
-    end
+    meshReset()
     local n = #loop
     for i = 1, n do
         local j = (i % n) + 1
@@ -897,19 +639,34 @@ local function strokeLoop(loop, border, opacity, stroke, append)
         meshTri(
             i0[1], i0[2], z, r, g, b, a,
             o0[1], o0[2], z, r, g, b, a,
-            i1[1], i1[2], z, r, g, b, a)
+            i1[1], i1[2], z, r, g, b, a,
+            0, 0, 2, 0, 0, 2, 0, 0, 2)
         meshTri(
             i1[1], i1[2], z, r, g, b, a,
             o0[1], o0[2], z, r, g, b, a,
-            o1[1], o1[2], z, r, g, b, a)
+            o1[1], o1[2], z, r, g, b, a,
+            0, 0, 2, 0, 0, 2, 0, 0, 2)
     end
-    if not append then
-        meshFlush()
-    end
+    love.graphics.setColor(1, 1, 1, 1)
+    meshFlush(MODE_FLAT)
 end
 
-local function strokeOutline(points, border, opacity, stroke, append)
-    strokeLoop(convexHull(points), border, opacity, stroke, append)
+local function strokeOutline(points, border, opacity, stroke)
+    strokeLoop(convexHull(points), border, opacity, stroke)
+end
+
+local function hullProject(lx, ly, lz)
+    local sx, sy, depth = proj(lx, ly, lz)
+    hullAdd(sx, sy, depth)
+end
+
+local function strokeProjected(border, opacity, stroke)
+    if not stroke or stroke <= 0.2 or opacity <= 0.02 or hullN < 3 then
+        hullReset()
+        return
+    end
+    strokeOutline(hullList(), border, opacity, stroke)
+    hullReset()
 end
 
 -- 3D bevel rim around a prism. Offset lives in object XY so side walls stay
@@ -940,15 +697,13 @@ local function strokePrism3D(pts, z0, z1, border, opacity, stroke)
             nx[i], ny[i] = 0, 0
         end
     end
-    local r, g, b, a = hex(border, opacity)
+    local r, g, b, a = Render.hex(border, opacity)
     local function emit(ax, ay, az, bx, by, bz, cx, cy, cz)
-        local apx, apy, apz = proj(ax, ay, az)
-        local bpx, bpy, bpz = proj(bx, by, bz)
-        local cpx, cpy, cpz = proj(cx, cy, cz)
         meshTri(
-            apx, apy, apz, r, g, b, a,
-            bpx, bpy, bpz, r, g, b, a,
-            cpx, cpy, cpz, r, g, b, a)
+            ax, ay, az, r, g, b, a,
+            bx, by, bz, r, g, b, a,
+            cx, cy, cz, r, g, b, a,
+            0, 0, 2, 0, 0, 2, 0, 0, 2)
     end
     if Render._style == "shaded" then
         love.graphics.setDepthMode("lequal", true)
@@ -982,71 +737,65 @@ local function strokePrism3D(pts, z0, z1, border, opacity, stroke)
             end
         end
     end
+    love.graphics.setColor(1, 1, 1, 1)
     meshFlush()
 end
 
-local function finishMesh(border, opacity, stroke, emit)
-    hullReset()
-    meshReset()
-    emit()
-    if stroke and stroke > 0.2 and opacity > 0.02 then
-        strokeOutline(hullList(), border, opacity, stroke, true)
+local function qk(n)
+    return math.floor((n or 0) * 4 + 0.5)
+end
+
+local function ptsCacheKey(prefix, pts, extra)
+    local t = { prefix, extra or 0 }
+    for i = 1, #pts do
+        t[#t + 1] = qk(pts[i])
     end
-    meshFlush()
+    return table.concat(t, ",")
+end
+
+local function rememberMesh(key, mesh)
+    if not mesh then return nil end
+    if prismCacheN >= PRISM_CACHE_MAX then
+        local drop
+        for k in pairs(prismCache) do
+            drop = k
+            break
+        end
+        if drop then
+            local old = prismCache[drop]
+            prismCache[drop] = nil
+            prismCacheN = prismCacheN - 1
+            if old and old.release then
+                pcall(old.release, old)
+            end
+        end
+    end
+    prismCache[key] = mesh
+    prismCacheN = prismCacheN + 1
+    return mesh
+end
+
+local function cachedMesh(key, builder)
+    local mesh = prismCache[key]
+    if mesh then return mesh end
+    return rememberMesh(key, builder())
 end
 
 local function drawSphere3D(radius, fill, border, opacity, stroke, angle, ox, oy, oz)
     if not radius or radius < 0.35 or opacity < 0.02 then return end
     begin3D(angle, ox, oy, oz)
-    local function emit()
-        for st = SPHERE_STACKS - 1, 0, -1 do
-            local outer, inner = sphereLat[st + 1], sphereLat[st]
+    love.graphics.setColor(Render.hex(fill, opacity))
+    drawGpuMesh(sphereMesh, MODE_SPHERE, radius)
+    if stroke and stroke > 0.2 and opacity > 0.02 then
+        hullReset()
+        for st = 0, SPHERE_STACKS do
+            local ring = sphereLat[st]
             for i = 0, SPHERE_SLICES - 1 do
-                local a, b = outer[i], outer[i + 1]
-                local c, d = inner[i], inner[i + 1]
-                if facing(a[1], a[2], a[3], a[1] * radius, a[2] * radius, a[3] * radius)
-                    or facing(c[1], c[2], c[3], c[1] * radius, c[2] * radius, c[3] * radius) then
-                    if st == SPHERE_STACKS - 1 then
-                        meshLitTri(
-                            c[1] * radius, c[2] * radius, c[3] * radius, c[1], c[2], c[3],
-                            d[1] * radius, d[2] * radius, d[3] * radius, d[1], d[2], d[3],
-                            a[1] * radius, a[2] * radius, a[3] * radius, a[1], a[2], a[3],
-                            fill, opacity, 22)
-                    elseif st == 0 then
-                        meshLitTri(
-                            a[1] * radius, a[2] * radius, a[3] * radius, a[1], a[2], a[3],
-                            b[1] * radius, b[2] * radius, b[3] * radius, b[1], b[2], b[3],
-                            c[1] * radius, c[2] * radius, c[3] * radius, c[1], c[2], c[3],
-                            fill, opacity, 22)
-                    else
-                        meshLitTri(
-                            a[1] * radius, a[2] * radius, a[3] * radius, a[1], a[2], a[3],
-                            b[1] * radius, b[2] * radius, b[3] * radius, b[1], b[2], b[3],
-                            c[1] * radius, c[2] * radius, c[3] * radius, c[1], c[2], c[3],
-                            fill, opacity, 22)
-                        meshLitTri(
-                            b[1] * radius, b[2] * radius, b[3] * radius, b[1], b[2], b[3],
-                            d[1] * radius, d[2] * radius, d[3] * radius, d[1], d[2], d[3],
-                            c[1] * radius, c[2] * radius, c[3] * radius, c[1], c[2], c[3],
-                            fill, opacity, 22)
-                    end
-                end
+                local p = ring[i]
+                hullProject(p[1] * radius, p[2] * radius, p[3] * radius)
             end
         end
-    end
-    finishMesh(border, opacity, stroke, emit)
-end
-
-local function drawCylinderCap(x, radius, yOff, zOff, nx, fill, opacity)
-    if radius < 0.25 then return end
-    zOff = zOff or 0
-    for i = 0, CYL_SEGS - 1 do
-        local a, b = cylRing[i], cylRing[i + 1]
-        meshLitTri(
-            x, yOff, zOff, nx, 0, 0,
-            x, yOff + a[1] * radius, zOff + a[2] * radius, nx, 0, 0,
-            x, yOff + b[1] * radius, zOff + b[2] * radius, nx, 0, 0,
-            fill, opacity, 16, true)
+        strokeProjected(border, opacity, stroke)
     end
 end
 
@@ -1058,42 +807,38 @@ local function drawCylinder3D(x0, x1, r0, r1, fill, border, opacity, stroke, yOf
     r1 = math.max(0, r1 or 0)
     if r0 < 0.25 and r1 < 0.25 then return end
     begin3D(angle, ox, oy, oz)
-    local L = x1 - x0
-    local sl = (r0 - r1) / math.max(math.abs(L), 1e-4)
-    local den = math.sqrt(1 + sl * sl)
-    local nxx = sl / den
-    local nScale = 1 / den
-    local innerN = x1 >= x0 and -1 or 1
-    local function emit()
-        if facing(innerN, 0, 0, x0, yOff, zOff) then
-            drawCylinderCap(x0, r0, yOff, zOff, innerN, fill, opacity)
+    love.graphics.setColor(Render.hex(fill, opacity))
+    drawGpuMesh(cylMesh, MODE_CYL, 1, { x0, x1, r0, r1 }, { yOff, zOff })
+    if stroke and stroke > 0.2 and opacity > 0.02 then
+        hullReset()
+        for i = 0, CYL_SEGS - 1 do
+            local a = cylRing[i]
+            hullProject(x0, yOff + a[1] * r0, zOff + a[2] * r0)
+            hullProject(x1, yOff + a[1] * r1, zOff + a[2] * r1)
         end
-        for o = 1, #cylOrder do
-            local i = cylOrder[o]
-            local a, b = cylRing[i], cylRing[i + 1]
-            local n0y, n0z = a[1] * nScale, a[2] * nScale
-            local n1y, n1z = b[1] * nScale, b[2] * nScale
-            local mx = (x0 + x1) * 0.5
-            local my = yOff + (a[1] + b[1]) * 0.25 * (r0 + r1)
-            local mz = zOff + (a[2] + b[2]) * 0.25 * (r0 + r1)
-            if facing(nxx, n0y, n0z, mx, my, mz) or facing(nxx, n1y, n1z, mx, my, mz) then
-                meshLitTri(
-                    x0, yOff + a[1] * r0, zOff + a[2] * r0, nxx, n0y, n0z,
-                    x1, yOff + a[1] * r1, zOff + a[2] * r1, nxx, n0y, n0z,
-                    x0, yOff + b[1] * r0, zOff + b[2] * r0, nxx, n1y, n1z,
-                    fill, opacity, 16)
-                meshLitTri(
-                    x1, yOff + a[1] * r1, zOff + a[2] * r1, nxx, n0y, n0z,
-                    x1, yOff + b[1] * r1, zOff + b[2] * r1, nxx, n1y, n1z,
-                    x0, yOff + b[1] * r0, zOff + b[2] * r0, nxx, n1y, n1z,
-                    fill, opacity, 16)
-            end
-        end
-        if facing(-innerN, 0, 0, x1, yOff, zOff) then
-            drawCylinderCap(x1, r1, yOff, zOff, -innerN, fill, opacity)
-        end
+        strokeProjected(border, opacity, stroke)
     end
-    finishMesh(border, opacity, stroke, emit)
+end
+
+local function buildPrismMesh(pts, z0, z1)
+    local verts = {}
+    local n = #pts / 2
+    for i = 1, n do
+        local j = (i % n) + 1
+        local x0, y0 = pts[i * 2 - 1], pts[i * 2]
+        local x1, y1 = pts[j * 2 - 1], pts[j * 2]
+        addTri(verts, 0, 0, z1, 0, 0, 1, x0, y0, z1, 0, 0, 1, x1, y1, z1, 0, 0, 1)
+        addTri(verts, 0, 0, z0, 0, 0, -1, x1, y1, z0, 0, 0, -1, x0, y0, z0, 0, 0, -1)
+        local dx, dy = x1 - x0, y1 - y0
+        local nx, ny = dy, -dx
+        if nx * (x0 + x1) + ny * (y0 + y1) < 0 then
+            nx, ny = -nx, -ny
+        end
+        nx, ny = nrm3(nx, ny, 0)
+        addTri(verts, x0, y0, z1, nx, ny, 0, x1, y1, z1, nx, ny, 0, x0, y0, z0, nx, ny, 0)
+        addTri(verts, x1, y1, z1, nx, ny, 0, x1, y1, z0, nx, ny, 0, x0, y0, z0, nx, ny, 0)
+    end
+    return newStaticMesh(verts)
 end
 
 local function drawPrism3D(pts, height, fill, border, opacity, stroke, angle, ox, oy, oz)
@@ -1102,61 +847,22 @@ local function drawPrism3D(pts, height, fill, border, opacity, stroke, angle, ox
     local h = height or 0
     if h < 0 then h = 0 end
     local z0, z1 = -h * 0.5, h * 0.5
-    local n = #pts / 2
-    local function emit()
-        if facing(0, 0, 1, 0, 0, z1) then
+    local mesh = cachedMesh(ptsCacheKey("p", pts, qk(z0) * 10000 + qk(z1)), function()
+        return buildPrismMesh(pts, z0, z1)
+    end)
+    love.graphics.setColor(Render.hex(fill, opacity))
+    drawGpuMesh(mesh, MODE_RAW)
+    if stroke and stroke > 0.2 and opacity > 0.02 then
+        if ptsConvex(pts) then
+            hullReset()
+            local n = #pts / 2
             for i = 1, n do
-                local j = (i % n) + 1
-                local x0, y0 = pts[i * 2 - 1], pts[i * 2]
-                local x1, y1 = pts[j * 2 - 1], pts[j * 2]
-                meshLitTri(
-                    0, 0, z1, 0, 0, 1,
-                    x0, y0, z1, 0, 0, 1,
-                    x1, y1, z1, 0, 0, 1,
-                    fill, opacity)
+                local x, y = pts[i * 2 - 1], pts[i * 2]
+                hullProject(x, y, z0)
+                hullProject(x, y, z1)
             end
-        end
-        if facing(0, 0, -1, 0, 0, z0) then
-            for i = 1, n do
-                local j = (i % n) + 1
-                local x0, y0 = pts[i * 2 - 1], pts[i * 2]
-                local x1, y1 = pts[j * 2 - 1], pts[j * 2]
-                meshLitTri(
-                    0, 0, z0, 0, 0, -1,
-                    x1, y1, z0, 0, 0, -1,
-                    x0, y0, z0, 0, 0, -1,
-                    fill, opacity, nil, true)
-            end
-        end
-        for i = 1, n do
-            local j = (i % n) + 1
-            local x0, y0 = pts[i * 2 - 1], pts[i * 2]
-            local x1, y1 = pts[j * 2 - 1], pts[j * 2]
-            local dx, dy = x1 - x0, y1 - y0
-            local nx, ny = dy, -dx
-            if nx * (x0 + x1) + ny * (y0 + y1) < 0 then
-                nx, ny = -nx, -ny
-            end
-            nx, ny = nrm3(nx, ny, 0)
-            if facing(nx, ny, 0, (x0 + x1) * 0.5, (y0 + y1) * 0.5, 0) then
-                meshLitTri(
-                    x0, y0, z1, nx, ny, 0,
-                    x1, y1, z1, nx, ny, 0,
-                    x0, y0, z0, nx, ny, 0,
-                    fill, opacity)
-                meshLitTri(
-                    x1, y1, z1, nx, ny, 0,
-                    x1, y1, z0, nx, ny, 0,
-                    x0, y0, z0, nx, ny, 0,
-                    fill, opacity)
-            end
-        end
-    end
-    if ptsConvex(pts) then
-        finishMesh(border, opacity, stroke, emit)
-    else
-        finishMesh(border, opacity, 0, emit)
-        if stroke and stroke > 0.2 and opacity > 0.02 then
+            strokeProjected(border, opacity, stroke)
+        else
             strokePrism3D(pts, z0, z1, border, opacity, stroke)
         end
     end
@@ -1172,68 +878,61 @@ end
 
 -- Thin ring (saw blade) for smasher guards. Outer walls plus a hole so the
 -- sphere reads through the middle.
+local function buildRingMesh(outer, inner, z0, z1)
+    local verts = {}
+    local n = #outer / 2
+    for i = 1, n do
+        local j = (i % n) + 1
+        local x0, y0 = outer[i * 2 - 1], outer[i * 2]
+        local x1, y1 = outer[j * 2 - 1], outer[j * 2]
+        local u0, v0 = inner[i * 2 - 1], inner[i * 2]
+        local u1, v1 = inner[j * 2 - 1], inner[j * 2]
+        addTri(verts, x0, y0, z1, 0, 0, 1, x1, y1, z1, 0, 0, 1, u0, v0, z1, 0, 0, 1)
+        addTri(verts, x1, y1, z1, 0, 0, 1, u1, v1, z1, 0, 0, 1, u0, v0, z1, 0, 0, 1)
+        addTri(verts, x0, y0, z0, 0, 0, -1, u0, v0, z0, 0, 0, -1, x1, y1, z0, 0, 0, -1)
+        addTri(verts, x1, y1, z0, 0, 0, -1, u0, v0, z0, 0, 0, -1, u1, v1, z0, 0, 0, -1)
+        local dx, dy = x1 - x0, y1 - y0
+        local nx, ny = dy, -dx
+        if nx * (x0 + x1) + ny * (y0 + y1) < 0 then
+            nx, ny = -nx, -ny
+        end
+        nx, ny = nrm3(nx, ny, 0)
+        addTri(verts, x0, y0, z1, nx, ny, 0, x1, y1, z1, nx, ny, 0, x0, y0, z0, nx, ny, 0)
+        addTri(verts, x1, y1, z1, nx, ny, 0, x1, y1, z0, nx, ny, 0, x0, y0, z0, nx, ny, 0)
+        dx, dy = u1 - u0, v1 - v0
+        nx, ny = -dy, dx
+        if nx * (u0 + u1) + ny * (v0 + v1) > 0 then
+            nx, ny = -nx, -ny
+        end
+        nx, ny = nrm3(nx, ny, 0)
+        addTri(verts, u0, v0, z1, nx, ny, 0, u0, v0, z0, nx, ny, 0, u1, v1, z1, nx, ny, 0)
+        addTri(verts, u1, v1, z1, nx, ny, 0, u0, v0, z0, nx, ny, 0, u1, v1, z0, nx, ny, 0)
+    end
+    return newStaticMesh(verts)
+end
+
 local function drawRingPrism3D(outer, inner, height, fill, border, opacity, stroke, angle, ox, oy, oz)
     if not outer or not inner or #outer < 6 or #inner < 6 or opacity < 0.02 then return end
     begin3D(angle, ox, oy, oz)
     local h = height or 0
     if h < 0 then h = 0 end
     local z0, z1 = -h * 0.5, h * 0.5
-    local n = #outer / 2
-    local function emit()
-        if facing(0, 0, 1, 0, 0, z1) then
-            for i = 1, n do
-                local j = (i % n) + 1
-                local x0, y0 = outer[i * 2 - 1], outer[i * 2]
-                local x1, y1 = outer[j * 2 - 1], outer[j * 2]
-                local u0, v0 = inner[i * 2 - 1], inner[i * 2]
-                local u1, v1 = inner[j * 2 - 1], inner[j * 2]
-                meshLitTri(x0, y0, z1, 0, 0, 1, x1, y1, z1, 0, 0, 1, u0, v0, z1, 0, 0, 1, fill, opacity)
-                meshLitTri(x1, y1, z1, 0, 0, 1, u1, v1, z1, 0, 0, 1, u0, v0, z1, 0, 0, 1, fill, opacity)
-            end
-        end
-        if facing(0, 0, -1, 0, 0, z0) then
-            for i = 1, n do
-                local j = (i % n) + 1
-                local x0, y0 = outer[i * 2 - 1], outer[i * 2]
-                local x1, y1 = outer[j * 2 - 1], outer[j * 2]
-                local u0, v0 = inner[i * 2 - 1], inner[i * 2]
-                local u1, v1 = inner[j * 2 - 1], inner[j * 2]
-                meshLitTri(x0, y0, z0, 0, 0, -1, u0, v0, z0, 0, 0, -1, x1, y1, z0, 0, 0, -1, fill, opacity, nil, true)
-                meshLitTri(x1, y1, z0, 0, 0, -1, u0, v0, z0, 0, 0, -1, u1, v1, z0, 0, 0, -1, fill, opacity, nil, true)
-            end
-        end
+    local key = ptsCacheKey("r", outer, qk(z0) * 10000 + qk(z1)) .. ptsCacheKey("i", inner, 0)
+    local mesh = cachedMesh(key, function()
+        return buildRingMesh(outer, inner, z0, z1)
+    end)
+    love.graphics.setColor(Render.hex(fill, opacity))
+    drawGpuMesh(mesh, MODE_RAW)
+    if stroke and stroke > 0.2 and opacity > 0.02 then
+        hullReset()
+        local n = #outer / 2
         for i = 1, n do
-            local j = (i % n) + 1
-            local x0, y0 = outer[i * 2 - 1], outer[i * 2]
-            local x1, y1 = outer[j * 2 - 1], outer[j * 2]
-            local dx, dy = x1 - x0, y1 - y0
-            local nx, ny = dy, -dx
-            if nx * (x0 + x1) + ny * (y0 + y1) < 0 then
-                nx, ny = -nx, -ny
-            end
-            nx, ny = nrm3(nx, ny, 0)
-            if facing(nx, ny, 0, (x0 + x1) * 0.5, (y0 + y1) * 0.5, 0) then
-                meshLitTri(x0, y0, z1, nx, ny, 0, x1, y1, z1, nx, ny, 0, x0, y0, z0, nx, ny, 0, fill, opacity)
-                meshLitTri(x1, y1, z1, nx, ny, 0, x1, y1, z0, nx, ny, 0, x0, y0, z0, nx, ny, 0, fill, opacity)
-            end
+            local x, y = outer[i * 2 - 1], outer[i * 2]
+            hullProject(x, y, z0)
+            hullProject(x, y, z1)
         end
-        for i = 1, n do
-            local j = (i % n) + 1
-            local x0, y0 = inner[i * 2 - 1], inner[i * 2]
-            local x1, y1 = inner[j * 2 - 1], inner[j * 2]
-            local dx, dy = x1 - x0, y1 - y0
-            local nx, ny = -dy, dx
-            if nx * (x0 + x1) + ny * (y0 + y1) > 0 then
-                nx, ny = -nx, -ny
-            end
-            nx, ny = nrm3(nx, ny, 0)
-            if facing(nx, ny, 0, (x0 + x1) * 0.5, (y0 + y1) * 0.5, 0) then
-                meshLitTri(x0, y0, z1, nx, ny, 0, x0, y0, z0, nx, ny, 0, x1, y1, z1, nx, ny, 0, fill, opacity)
-                meshLitTri(x1, y1, z1, nx, ny, 0, x0, y0, z0, nx, ny, 0, x1, y1, z0, nx, ny, 0, fill, opacity)
-            end
-        end
+        strokeProjected(border, opacity, stroke)
     end
-    finishMesh(border, opacity, stroke, emit)
 end
 
 local function isSmasherGuard(e)
@@ -1241,7 +940,7 @@ local function isSmasherGuard(e)
     local sty = e and e.style
     if not phy or not sty then return false end
     if (phy.sides or 0) < 3 then return false end
-    if flagged(sty, StyleFlags.isStar) then return false end
+    if Render.flagged(sty, StyleFlags.isStar) then return false end
     if (sty.color or 0) ~= 0 then return false end
     local parent = e.parentEntity
     if not parent or not parent.physics then return false end
@@ -1287,9 +986,9 @@ end
 local function fillStroke(fill, border, opacity, stroke, drawFill, drawStroke)
     love.graphics.setLineStyle("smooth")
     love.graphics.setLineJoin(Render._style == "old" and "miter" or "bevel")
-    love.graphics.setColor(hex(fill, opacity))
+    love.graphics.setColor(Render.hex(fill, opacity))
     drawFill()
-    love.graphics.setColor(hex(border, opacity))
+    love.graphics.setColor(Render.hex(border, opacity))
     love.graphics.setLineWidth(stroke)
     drawStroke()
 end
@@ -1428,7 +1127,7 @@ local function drawBeamRibbon(hl, hw, fill, opacity, time, layer, amp, freq, pha
     end
     for i = 0, segs - 1 do
         local u = (i + 0.5) / segs
-        local r, g, b = beamTint(fill, u, time, layer)
+        local r, g, b = Render.beamTint(fill, u, time, layer)
         love.graphics.setColor(r, g, b, opacity * alphaMul)
         local i0 = i * 2 + 1
         local i1 = (i + 1) * 2 + 1
@@ -1460,7 +1159,7 @@ local function drawBeam(e, hl, hw, fill, opacity, worldAngle)
 
         for side = -1, 1, 2 do
             local u = side > 0 and 1 or 0
-            local r, g, b = beamTint(fill, u, time, side)
+            local r, g, b = Render.beamTint(fill, u, time, side)
             local pulse = 0.65 + 0.35 * math.sin(time * 11 + side * 2)
             love.graphics.setColor(r, g, b, opacity * 0.55 * pulse)
             love.graphics.circle("fill", side * hl, 0, hw * (1.15 + 0.35 * pulse))
@@ -1473,13 +1172,14 @@ local function drawBeam(e, hl, hw, fill, opacity, worldAngle)
             local fade = 1 - (p.age / p.life)
             fade = fade * fade
             local u = (p.x / math.max(hl, 1) + 1) * 0.5
-            local r, g, b = beamTint(fill, u, time + p.age, p.layer)
+            local r, g, b = Render.beamTint(fill, u, time + p.age, p.layer)
             love.graphics.setColor(r, g, b, opacity * fade * 0.85)
             love.graphics.circle("fill", p.x, p.y, p.size * (0.45 + fade * 0.7))
         end
     end
 
     if Render._style == "shaded" then
+        unbindShade()
         love.graphics.push()
         love.graphics.rotate(worldAngle or 0)
         love.graphics.setDepthMode("always", false)
@@ -1495,16 +1195,16 @@ local function drawBody(e, opacity, hit, worldAngle, worldX, worldY, worldZ)
     local phy = e.physics
     local sty = e.style
     if not phy or not sty then return end
-    if not flagged(sty, StyleFlags.isVisible) then return end
+    if not Render.flagged(sty, StyleFlags.isVisible) then return end
     if opacity <= 0.02 then return end
     local size = phy.size or 0
     if size <= 0 then return end
     local sides = phy.sides or 0
     if sides < 1 then return end
-    local fill = applyHit(colorOf(e), hit)
-    local border = applyHit(strokeHex(colorOf(e)), hit)
+    local fill = Render.applyHit(Render.colorOf(e), hit)
+    local border = Render.applyHit(strokeHex(Render.colorOf(e)), hit)
     local trap = bit.band(phy.flags or 0, PhysicsFlags.isTrapezoid) ~= 0
-    local stroke = math.max(pixel() * 2.5, math.min((sty.borderWidth or 7.5) * 0.78, size * 0.2))
+    local stroke = math.max(Render.pixel() * 2.5, math.min((sty.borderWidth or 7.5) * 0.78, size * 0.2))
     worldAngle = worldAngle or 0
     worldX, worldY, worldZ = worldX or 0, worldY or 0, worldZ or 0
 
@@ -1534,9 +1234,10 @@ local function drawBody(e, opacity, hit, worldAngle, worldX, worldY, worldZ)
             love.graphics.push()
             love.graphics.rotate(worldAngle or 0)
             if Render._style == "shaded" then
+                unbindShade()
                 love.graphics.setDepthMode("always", false)
             end
-            love.graphics.setColor(hex(fill, opacity))
+            love.graphics.setColor(Render.hex(fill, opacity))
             love.graphics.polygon("fill", -hl, -hw, hl, -hw, hl, hw, -hl, hw)
             if Render._style == "shaded" then
                 love.graphics.setDepthMode("lequal", true)
@@ -1597,7 +1298,7 @@ local function drawBody(e, opacity, hit, worldAngle, worldX, worldY, worldZ)
             end
         end
     else
-        local star = flagged(sty, StyleFlags.isStar)
+        local star = Render.flagged(sty, StyleFlags.isStar)
         -- Protocol size is the collision incircle. Diep draws polygons out to
         -- the vertices at size * sqrt(2).
         local rad = size * math.sqrt(2)
@@ -1709,8 +1410,8 @@ local function drawName(e, opacity)
 end
 
 local function childSort(a, b)
-    local af = flagged(a.style, StyleFlags.renderFirst) and 0 or 1
-    local bf = flagged(b.style, StyleFlags.renderFirst) and 0 or 1
+    local af = Render.flagged(a.style, StyleFlags.renderFirst) and 0 or 1
+    local bf = Render.flagged(b.style, StyleFlags.renderFirst) and 0 or 1
     if af ~= bf then return af < bf end
     local az = (a.style and a.style.zIndex) or 0
     local bz = (b.style and b.style.zIndex) or 0
@@ -1733,7 +1434,7 @@ local function splitChildren(e)
     if kids then
         for i = 1, #kids do
             local c = kids[i]
-            if flagged(c.style, StyleFlags.showsAboveParent) then
+            if Render.flagged(c.style, StyleFlags.showsAboveParent) then
                 na = na + 1
                 above[na] = c
             else
@@ -1758,11 +1459,11 @@ local drawNode
 drawNode = function(e, parentAngle, parentOpacity, parentFlash, parentHit, parentWX, parentWY, parentWZ)
     if e.camera or e.arena then return end
     if not e.physics and #(e.children or {}) == 0 then return end
-    local lx, ly, la, flags = localPos(e)
+    local lx, ly, la, flags = Render.localPos(e)
     local abs = bit.band(flags, PositionFlags.absoluteRotation) ~= 0
     local worldAngle = abs and la or (parentAngle + la)
     local opacity = parentOpacity * ((e.style and e.style.opacity) or 1)
-    local flash = parentFlash or flagged(e.style, StyleFlags.isFlashing)
+    local flash = parentFlash or Render.flagged(e.style, StyleFlags.isFlashing)
     local hit = parentHit or 0
     if (e._hitFlash or 0) > hit then hit = e._hitFlash end
     local drawOp = opacity
@@ -1776,7 +1477,7 @@ drawNode = function(e, parentAngle, parentOpacity, parentFlash, parentHit, paren
         local wx = parentWX + lx * c - ly * s
         local wy = parentWY + lx * s + ly * c
         local wz = parentWZ
-        if flagged(e.style, StyleFlags.showsAboveParent) then
+        if Render.flagged(e.style, StyleFlags.showsAboveParent) then
             wz = wz + mountedLift(e)
         end
         local below, above = splitChildren(e)
@@ -1791,7 +1492,8 @@ drawNode = function(e, parentAngle, parentOpacity, parentFlash, parentHit, paren
         if e.physics then
             drawBody(e, drawOp, hit, worldAngle, wx, wy, wz)
         end
-        if e.physics and flagged(e.style, StyleFlags.isVisible) then
+        if e.physics and Render.flagged(e.style, StyleFlags.isVisible) then
+            unbindShade()
             love.graphics.setDepthMode("always", false)
             drawHealth(e, drawOp)
             drawName(e, drawOp)
@@ -1820,7 +1522,7 @@ drawNode = function(e, parentAngle, parentOpacity, parentFlash, parentHit, paren
     end
     drawKids(above)
     love.graphics.pop()
-    if e.physics and flagged(e.style, StyleFlags.isVisible) then
+    if e.physics and Render.flagged(e.style, StyleFlags.isVisible) then
         drawHealth(e, drawOp)
         drawName(e, drawOp)
     end
@@ -1833,7 +1535,7 @@ function Render.draw(world)
     local camX, camY, fov = Render.view(world)
     Render._camX, Render._camY, Render._fov = camX, camY, fov
     do
-        local r, g, b, a = hex(0xCDCDCD)
+        local r, g, b, a = Render.hex(0xCDCDCD)
         if Render._style == "shaded" then
             love.graphics.clear(r, g, b, a, 0, 1)
         else
@@ -1841,29 +1543,39 @@ function Render.draw(world)
         end
     end
     love.graphics.push()
-    local scale, viewW, viewH = applyCamera(camX, camY, fov)
+    local scale, viewW, viewH = Render.applyCamera(camX, camY, fov)
     Render._scale = scale
     if Render._style == "shaded" then
         syncCamera3D(viewH)
     end
     Render._selfEntity = world:player()
     local arena = world:arenaValues()
-    drawArenaFloor(arena)
-    drawGrid(camX, camY, viewW, viewH)
-    drawArenaBorder(arena)
+    Render.drawArenaFloor(arena)
+    Render.drawGrid(camX, camY, viewW, viewH)
+    Render.drawArenaBorder(arena)
 
     local roots = {}
-    local halfW, halfH = viewW * 0.5, viewH * 0.5
-    local x0, x1 = camX - halfW, camX + halfW
-    local y0, y1 = camY - halfH, camY + halfH
+    local _, visW, visH = Render.viewMetrics(fov)
+    Render._viewW, Render._viewH = visW, visH
+    local margin = math.max(320, math.max(visW, visH) * 0.05)
+    local x0, x1 = camX - visW * 0.5 - margin, camX + visW * 0.5 + margin
+    local y0, y1 = camY - visH * 0.5 - margin, camY + visH * 0.5 + margin
     for _, e in pairs(world.entities) do
         if e.physics and not e.parentEntity and not e.camera and not e.arena and not e.barrel then
-            local px = e.ix or (e.position and e.position.x) or 0
-            local py = e.iy or (e.position and e.position.y) or 0
-            local size = e.physics.size or 0
-            local width = e.physics.width or 0
-            local pad = math.max(size, width) + 200
-            if px + pad >= x0 and px - pad <= x1 and py + pad >= y0 and py - pad <= y1 then
+            local wx, wy = world:ensureWorld(e)
+            local phy = e.physics
+            local size = phy.size or 0
+            local width = phy.width or 0
+            local rad
+            if (phy.sides or 0) == 2 then
+                local ang = e.ia or (e.position and e.position.angle) or 0
+                local hl, hw = size * 0.5, width * 0.5
+                local c, s = math.abs(math.cos(ang)), math.abs(math.sin(ang))
+                rad = math.max(hl * c + hw * s, hl * s + hw * c)
+            else
+                rad = size * math.sqrt(2)
+            end
+            if wx + rad >= x0 and wx - rad <= x1 and wy + rad >= y0 and wy - rad <= y1 then
                 roots[#roots + 1] = e
             end
         end
@@ -1878,6 +1590,7 @@ function Render.draw(world)
     end
     if Render._style == "shaded" then
         love.graphics.setDepthMode()
+        unbindShade()
     end
     love.graphics.pop()
     return camX, camY, fov
@@ -2084,6 +1797,7 @@ paintTankIcon = function(def, cx, cy, box, alpha)
     local stroke = math.max(2.2 / s, bodyR * 0.08)
     local savedX, savedY, savedZ, savedF = _camX, _camY, _camZ, _focal
     if Render._style == "shaded" then
+        unbindShade()
         _camX, _camY = 0, 0
         _camZ, _focal = 300, 300
         pcall(love.graphics.clear, false, false, true)
@@ -2119,6 +1833,7 @@ paintTankIcon = function(def, cx, cy, box, alpha)
     love.graphics.pop()
     if Render._style == "shaded" then
         love.graphics.setDepthMode()
+        unbindShade()
         _camX, _camY, _camZ, _focal = savedX, savedY, savedZ, savedF
     end
 end
@@ -2170,8 +1885,4 @@ bakeTankIcon = function(def)
     iconCache[key] = canvas
     return canvas
 end
-
-Render.hex = hex
-Render.colorOf = colorOf
-
-return Render
+end

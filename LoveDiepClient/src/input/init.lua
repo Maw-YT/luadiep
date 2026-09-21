@@ -1,5 +1,6 @@
 local bit = require("bit")
 local Enums = require("src.protocol.enums")
+local Render = require("src.render")
 
 local Input = {}
 
@@ -38,11 +39,7 @@ function Input.flags(noClick, allowCheats)
 end
 
 function Input.screenToWorld(mx, my, camX, camY, fov)
-    local sw, sh = love.graphics.getDimensions()
-    fov = fov or 0.35
-    local viewW = 1920 / fov
-    local viewH = 1080 / fov
-    local scale = math.min(sw / viewW, sh / viewH)
+    local scale, _, _, sw, sh = Render.viewMetrics(fov)
     local wx = camX + (mx - sw / 2) / scale
     local wy = camY + (my - sh / 2) / scale
     return wx, wy

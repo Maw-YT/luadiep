@@ -32,6 +32,10 @@ function Reader:_byte(i)
     return self.buffer:byte(i + 1) or 0
 end
 
+function Reader:remaining()
+    return self.len - self.at
+end
+
 function Reader:u8()
     local v = self:_byte(self.at)
     self.at = self.at + 1
