@@ -11,6 +11,7 @@ local FALLBACK = {
         items = {
             "Client FPS now follows the monitor refresh rate.",
             "Tank tree icons are cached so zooming stays smooth.",
+            "The match still plays behind the tank tree.",
             "Gamemode buttons now load from the server.",
             "Home screen changelog panel.",
             "Fixed 3D trap outlines.",

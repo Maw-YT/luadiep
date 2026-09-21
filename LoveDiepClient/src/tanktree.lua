@@ -365,7 +365,7 @@ function TankTree.draw(game, buttons, sw, sh, box)
 
     box(buttons, 0, 0, sw, sh, function() end, "treeback", "arrow")
 
-    love.graphics.setColor(0.05, 0.06, 0.08, 1)
+    love.graphics.setColor(0.05, 0.06, 0.08, 0.62)
     love.graphics.rectangle("fill", 0, 0, sw, sh)
 
     local pad = 40

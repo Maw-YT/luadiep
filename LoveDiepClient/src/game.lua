@@ -595,13 +595,9 @@ function Game:update(dt)
 end
 
 function Game:draw()
-    if not self.treeOpen then
-        local ok, err = pcall(Render.draw, self.world)
-        if not ok then
-            print("[LoveDiepClient] render: " .. tostring(err))
-        end
-    else
-        love.graphics.clear(0.05, 0.06, 0.08, 1)
+    local ok, err = pcall(Render.draw, self.world)
+    if not ok then
+        print("[LoveDiepClient] render: " .. tostring(err))
     end
     while love.graphics.getStackDepth() > 0 do
         love.graphics.pop()
