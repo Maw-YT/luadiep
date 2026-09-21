@@ -112,6 +112,9 @@ local function handleApi(pathname, socket)
         local achPath = pathJoin(ROOT, "src", "Const", "Achievements.json")
         return sendFile(socket, achPath)
     end
+    if rest == "/changelog" then
+        return sendFile(socket, pathJoin(ROOT, "src", "Const", "Changelog.json"))
+    end
     writeHttp(socket, "404 Not Found", { ["Content-Type"] = "text/plain" }, "Not Found")
 end
 

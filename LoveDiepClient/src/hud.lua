@@ -6,6 +6,7 @@ local Console = require("src.console")
 local Settings = require("src.settings")
 local TankTree = require("src.tanktree")
 local Achievements = require("src.achievements")
+local Changelog = require("src.changelog")
 
 local Hud = {}
 
@@ -672,6 +673,96 @@ local function drawAchievements(sw, sh)
     love.graphics.setScissor()
 end
 
+local function wrapCount(text, width)
+    local font = love.graphics.getFont()
+    if not font or not text or text == "" then
+        return 1
+    end
+    local _, lines = font:getWrap(text, width)
+    return math.max(1, #lines)
+end
+
+local function drawChangelog(buttons, sw, sh)
+    local list = Changelog.entries()
+    local panelW = 268
+    local panelX = 24
+    local panelY = 82
+    local panelH = sh - 118
+    if panelH < 160 then
+        Changelog.hide()
+        return
+    end
+
+    Changelog.show(panelX, panelY, panelW, panelH)
+    if buttons then
+        box(buttons, panelX, panelY, panelW, panelH, function() end, "changelog", "arrow")
+    end
+
+    love.graphics.setColor(0.07, 0.08, 0.10, 0.72)
+    roundrect(panelX, panelY, panelW, panelH, 14)
+    love.graphics.setColor(1, 1, 1, 0.08)
+    love.graphics.setLineWidth(1.4)
+    roundrect(panelX, panelY, panelW, panelH, 14, "line")
+    love.graphics.setColor(1, 1, 1, 0.95)
+    Render.outlinedPrintf("Changelog", panelX + 12, panelY + 12, panelW - 24, "center", 2)
+
+    local innerX, innerY = panelX + 12, panelY + 48
+    local innerW, innerH = panelW - 24, panelH - 60
+    love.graphics.setColor(0.04, 0.05, 0.07, 0.55)
+    roundrect(innerX, innerY, innerW, innerH, 10)
+
+    local textW = innerW - 20
+    local y = innerY + 10
+    local blocks = {}
+    for i = 1, #list do
+        local e = list[i]
+        local h = 0
+        if e.date and e.date ~= "" then
+            h = h + 22
+        end
+        local items = e.items or {}
+        for j = 1, #items do
+            h = h + wrapCount("• " .. items[j], textW) * 18
+        end
+        h = h + 12
+        blocks[#blocks + 1] = { e = e, h = h, y = y }
+        y = y + h
+    end
+
+    local contentH = y - (innerY + 10)
+    Changelog.setMaxScroll(math.max(0, contentH - innerH + 16))
+    local off = Changelog.scrollOffset()
+
+    scissorGui(innerX, innerY, innerW, innerH)
+    if #list < 1 then
+        love.graphics.setColor(0.62, 0.68, 0.76, 0.85)
+        Render.printf("No notes yet.", innerX + 10, innerY + innerH * 0.42, innerW - 20, "center")
+    else
+        for i = 1, #blocks do
+            local b = blocks[i]
+            local by = b.y - off
+            if by + b.h > innerY - 4 and by < innerY + innerH + 4 then
+                local e = b.e
+                local iy = by
+                if e.date and e.date ~= "" then
+                    love.graphics.setColor(0.98, 0.82, 0.22, 0.95)
+                    Render.outlinedPrintf(Render.safeText(e.date), innerX + 10, iy, textW, "left", 1)
+                    iy = iy + 22
+                end
+                local items = e.items or {}
+                for j = 1, #items do
+                    local line = "• " .. items[j]
+                    local lh = wrapCount(line, textW) * 18
+                    love.graphics.setColor(0.84, 0.88, 0.93, 0.92)
+                    Render.printf(Render.safeText(line), innerX + 10, iy, textW, "left")
+                    iy = iy + lh
+                end
+            end
+        end
+    end
+    love.graphics.setScissor()
+end
+
 local function drawHome(game, buttons, sw, sh, markHover, hoverScaleFn)
     if game.optionsOpen or game.treeOpen or game.paused then
         markHover = function() end
@@ -687,9 +778,14 @@ local function drawHome(game, buttons, sw, sh, markHover, hoverScaleFn)
     local connecting = game.state == "connecting"
     local ready = game.ws and game.ws.state == "open"
     local modes = game.modes or { { id = "ffa", label = "FFA" }, { id = "sandbox", label = "Sandbox" } }
+    local gap = 12
+    local count = math.max(1, #modes)
+    local cols = math.min(count, 4)
+    local rows = math.ceil(count / cols)
+    local extraH = (rows - 1) * 52
 
     love.graphics.setColor(0.07, 0.08, 0.10, 0.72 * a)
-    local panelX, panelY, panelW, panelH = fx - 28, fy - 132, fieldW + 56, 448
+    local panelX, panelY, panelW, panelH = fx - 28, fy - 132, fieldW + 56, 448 + extraH
     roundrect(panelX, panelY, panelW, panelH, 18)
 
     love.graphics.push()
@@ -702,12 +798,13 @@ local function drawHome(game, buttons, sw, sh, markHover, hoverScaleFn)
     love.graphics.setColor(0.75, 0.82, 0.9, 0.9 * a)
     Render.printf("Gamemode", fx, fy - 58, fieldW, "center")
 
-    local gap = 12
-    local bw = (fieldW - gap) / math.max(1, #modes)
+    local bw = (fieldW - gap * (cols - 1)) / cols
     for i = 1, #modes do
         local mode = modes[i]
-        local bx = fx + (i - 1) * (bw + gap)
-        local by = fy - 32
+        local col = (i - 1) % cols
+        local row = math.floor((i - 1) / cols)
+        local bx = fx + col * (bw + gap)
+        local by = fy - 32 + row * 52
         local key = "mode" .. mode.id
         markHover(key, bx, by, bw, 44)
         local dx, dy, dw, dh = hoverScaleFn(key, bx, by, bw, 44)
@@ -731,7 +828,7 @@ local function drawHome(game, buttons, sw, sh, markHover, hoverScaleFn)
         end, key)
     end
 
-    local nameY = fy + 28
+    local nameY = fy + 28 + extraH
     local focused = (game.focus or "spawnName") == "spawnName"
     markHover("spawnname", fx, nameY, fieldW, 44)
     if focused then
@@ -883,6 +980,7 @@ local function drawHome(game, buttons, sw, sh, markHover, hoverScaleFn)
         end
     end, "cog")
 
+    drawChangelog(buttons, sw, sh)
     drawAchievements(sw, sh)
 end
 
@@ -1290,6 +1388,7 @@ local function drawCountdown(game, arena, sw, sh)
 end
 
 function Hud.draw(game)
+    Changelog.hide()
     while love.graphics.getStackDepth() > 0 do
         love.graphics.pop()
     end
@@ -1341,6 +1440,21 @@ function Hud.draw(game)
     local function overRect(x, y, w, h, pad)
         pad = pad or 10
         return mx >= x - pad and my >= y - pad and mx <= x + w + pad and my <= y + h + pad
+    end
+
+    if game.treeOpen then
+        TankTree.draw(game, buttons, sw, sh, box)
+        Console.draw(game, buttons, sw, sh, box)
+        if Settings.showFps then
+            local fps = love.timer.getFPS()
+            local label = string.format("%d FPS", fps)
+            love.graphics.setColor(0, 0, 0, 0.48)
+            roundrect(10, 8, 92, 28, 8)
+            love.graphics.setColor(1, 1, 1, 0.96)
+            Render.outlinedPrintf(label, 10, 13, 92, "center", 2)
+        end
+        love.graphics.pop()
+        return buttons
     end
 
     if game.notifications then

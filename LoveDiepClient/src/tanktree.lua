@@ -365,8 +365,17 @@ function TankTree.draw(game, buttons, sw, sh, box)
 
     box(buttons, 0, 0, sw, sh, function() end, "treeback", "arrow")
 
-    love.graphics.setColor(0.05, 0.06, 0.08, 0.82)
+    love.graphics.setColor(0.05, 0.06, 0.08, 1)
     love.graphics.rectangle("fill", 0, 0, sw, sh)
+
+    local pad = 40
+    local vx0 = (-ox - pad) / z
+    local vy0 = (PAD_TOP - 6 - oy - pad) / z
+    local vx1 = (sw - ox + pad) / z
+    local vy1 = (sh - oy + pad) / z
+    local function nodeVisible(n)
+        return n.x + NODE_W >= vx0 and n.x <= vx1 and n.y + NODE_H >= vy0 and n.y <= vy1
+    end
 
     local function tool(x, y, w, h, label, fn, key)
         love.graphics.setColor(0.12, 0.16, 0.22, 0.96)
@@ -424,7 +433,7 @@ function TankTree.draw(game, buttons, sw, sh, box)
         local y1 = n.y + 40
         for i = 1, #(n.kids or {}) do
             local kid = nodes[n.kids[i]]
-            if kid then
+            if kid and (nodeVisible(n) or nodeVisible(kid)) then
                 local x2 = kid.x
                 local y2 = kid.y + 40
                 local mxid = (x1 + x2) * 0.5
@@ -437,7 +446,7 @@ function TankTree.draw(game, buttons, sw, sh, box)
     local hover = game.treeHover
     for id, n in pairs(nodes) do
         local def = tanksById[id]
-        if def then
+        if def and nodeVisible(n) then
             local hi = (selected == id) or (hover == id)
             if selected == id then
                 love.graphics.setColor(0.16, 0.55, 0.85, 0.95)

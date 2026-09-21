@@ -15,11 +15,10 @@ local Console = require("src.console")
 local Settings = require("src.settings")
 local TankTree = require("src.tanktree")
 local Achievements = require("src.achievements")
+local Servers = require("src.servers")
+local Changelog = require("src.changelog")
 
-local GAMEMODES = {
-    { id = "ffa", label = "FFA" },
-    { id = "sandbox", label = "Sandbox" }
-}
+local GAMEMODES = Servers.fallback()
 
 local FIELD_MAX = {
     spawnName = 16,
@@ -93,10 +92,34 @@ function Game:init()
     self.autoSpinAngle = 0
     Settings.load()
     Achievements.load()
+    Changelog.load()
     Render.setStyle(Settings.style)
     Render.setInnerShadow(Settings.innerShadow)
     self.password = Settings.devPassword or ""
     Console.ensure(self)
+    Servers.fetch(self)
+    Changelog.fetch(self)
+end
+
+function Game:apiModes()
+    local out = {}
+    local seen = {}
+    local function add(id, label)
+        if type(id) ~= "string" or id == "" then return end
+        id = id:lower()
+        if seen[id] then return end
+        seen[id] = true
+        out[#out + 1] = { id = id, label = label or id }
+    end
+    add(self.gamemode)
+    local src = self.modes or GAMEMODES
+    for i = 1, #src do
+        add(src[i].id, src[i].label)
+    end
+    for i = 1, #GAMEMODES do
+        add(GAMEMODES[i].id, GAMEMODES[i].label)
+    end
+    return out
 end
 
 function Game:persistPassword()
@@ -263,15 +286,17 @@ function Game:queueTankUpgrade(id)
 end
 
 function Game:cycleGamemode(dir)
+    local modes = self.modes or GAMEMODES
+    if #modes < 1 then return end
     local idx = 1
-    for i = 1, #GAMEMODES do
-        if GAMEMODES[i].id == self.gamemode then
+    for i = 1, #modes do
+        if modes[i].id == self.gamemode then
             idx = i
             break
         end
     end
-    idx = ((idx - 1 + dir) % #GAMEMODES) + 1
-    self:selectGamemode(GAMEMODES[idx].id)
+    idx = ((idx - 1 + dir) % #modes) + 1
+    self:selectGamemode(modes[idx].id)
 end
 
 function Game:connect()
@@ -300,6 +325,8 @@ function Game:connect()
         game:send(Encode.ping())
         game.pingAcc = 0
         Console.fetch(game)
+        Servers.fetch(game)
+        Changelog.fetch(game)
     end
     self.ws.onMessage = function(payload)
         game:onPacket(payload)
@@ -485,6 +512,8 @@ function Game:update(dt)
     end
     Hud.update(dt)
     Console.update(self, dt)
+    Servers.update(self, dt)
+    Changelog.update(self, dt)
     TankTree.update(self, dt)
     Achievements.update(dt)
     if self.treeOpen or self.optionsOpen or self.paused then
@@ -566,9 +595,13 @@ function Game:update(dt)
 end
 
 function Game:draw()
-    local ok, err = pcall(Render.draw, self.world)
-    if not ok then
-        print("[LoveDiepClient] render: " .. tostring(err))
+    if not self.treeOpen then
+        local ok, err = pcall(Render.draw, self.world)
+        if not ok then
+            print("[LoveDiepClient] render: " .. tostring(err))
+        end
+    else
+        love.graphics.clear(0.05, 0.06, 0.08, 1)
     end
     while love.graphics.getStackDepth() > 0 do
         love.graphics.pop()
@@ -850,6 +883,9 @@ end
 function Game:wheelmoved(dx, dy)
     local gx, gy = Hud.screenToGui(love.mouse.getPosition())
     if Console.wheel(self, dx, dy, gx, gy) then
+        return
+    end
+    if Changelog.wheel(dx, dy, gx, gy) then
         return
     end
     if not self.treeOpen then return end

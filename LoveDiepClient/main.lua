@@ -52,13 +52,20 @@ function love.focus(focused)
     end
 end
 
--- Pump simulation even when the window is unfocused. Default vsync present()
--- can stall for a long time on Windows when another window is in front, which
--- stops us reading the socket and makes a packet burst look like a disconnect.
+-- Pump simulation even when the window is unfocused. Vsync present() can
+-- stall for a long time on Windows when another window is in front, so we
+-- turn vsync off while unfocused and cap that background pump to 60 Hz.
 function love.run()
     if love.load then love.load(love.arg.parseGameArguments(arg), arg) end
     if love.timer then love.timer.step() end
-    local frame = 1 / 60
+    local vsyncOn = true
+    local function setVsync(on)
+        if on == vsyncOn then return end
+        vsyncOn = on
+        if love.window.setVSync then
+            love.window.setVSync(on and 1 or 0)
+        end
+    end
     return function()
         if love.event then
             love.event.pump()
@@ -72,6 +79,11 @@ function love.run()
                 end
             end
         end
+        local focused = true
+        if love.window and love.window.hasFocus then
+            focused = love.window.hasFocus()
+        end
+        setVsync(focused)
         local dt = 0
         if love.timer then dt = love.timer.step() end
         if love.update then love.update(dt) end
@@ -81,12 +93,10 @@ function love.run()
             if love.draw then love.draw() end
             love.graphics.present()
         end
-        if love.timer then
-            local leftover = frame - dt
-            if leftover > 0.001 then
+        if not focused and love.timer then
+            local leftover = (1 / 60) - dt
+            if leftover > 0 then
                 love.timer.sleep(leftover)
-            else
-                love.timer.sleep(0.001)
             end
         end
     end

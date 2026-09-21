@@ -1,0 +1,34 @@
+[
+  {
+    "date": "Sep 21, 2026",
+    "items": [
+      "Client FPS now follows the monitor refresh rate.",
+      "Tank tree icons are cached so zooming stays smooth.",
+      "Gamemode buttons now load from the server.",
+      "Home screen changelog panel.",
+      "Fixed 3D trap outlines.",
+      "Smashers and top turrets read as stacked 3D parts."
+    ]
+  },
+  {
+    "date": "Sep 20, 2026",
+    "items": [
+      "Added a depth-tested 3D shaded look.",
+      "Dev password now persists between sessions."
+    ]
+  },
+  {
+    "date": "Sep 19, 2026",
+    "items": [
+      "Join public TLS URLs without freezing.",
+      "Recover from dropped connections instead of hanging."
+    ]
+  },
+  {
+    "date": "Sep 18, 2026",
+    "items": [
+      "Lua diep server and LÖVE client.",
+      "HUD, pause menu, and health-bar effects."
+    ]
+  }
+]

@@ -170,7 +170,8 @@ function Console.fetch(game)
     if type(raw) ~= "string" or raw:match("^%s*$") then
         raw = config.defaultUrl
     end
-    local target = Url.resolveApi(raw, (config.apiPath or "/api") .. "/commands", game.modes)
+    local modes = game.apiModes and game:apiModes() or game.modes
+    local target = Url.resolveApi(raw, (config.apiPath or "/api") .. "/commands", modes)
     if not target then return end
     local key = target.host .. ":" .. tostring(target.port) .. Url.requestPath(target)
     if fetch and not fetch.done then

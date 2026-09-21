@@ -10,12 +10,15 @@ Render._style = "new"
 Render._innerShadow = 0.15
 
 function Render.setStyle(style)
+    local nextStyle = "new"
     if style == "old" then
-        Render._style = "old"
+        nextStyle = "old"
     elseif style == "shaded" then
-        Render._style = "shaded"
-    else
-        Render._style = "new"
+        nextStyle = "shaded"
+    end
+    if Render._style ~= nextStyle then
+        Render._style = nextStyle
+        Render.invalidateIconCache()
     end
 end
 
@@ -24,7 +27,10 @@ function Render.setInnerShadow(coverage)
     if coverage ~= coverage then coverage = 0.15 end
     if coverage < 0 then coverage = 0 end
     if coverage > 1 then coverage = 1 end
-    Render._innerShadow = coverage
+    if Render._innerShadow ~= coverage then
+        Render._innerShadow = coverage
+        Render.invalidateIconCache()
+    end
 end
 
 local StyleFlags = Enums.StyleFlags
@@ -92,6 +98,9 @@ function Render.safeText(s)
     if type(s) ~= "string" then s = tostring(s) end
     local n = #s
     if n == 0 then return s end
+    if not s:find("%c") then
+        return s
+    end
     local out, o = {}, 0
     local i = 1
     while i <= n do
@@ -370,7 +379,13 @@ local function drawArenaBorder(arena)
     love.graphics.rectangle("line", l, t, r - l, b - t)
 end
 
+local polyCache = {}
 local function polyRegular(sides, size, star)
+    local q = math.floor((size or 0) * 16 + 0.5)
+    local key = q * 512 + (sides or 0) * 2 + (star and 1 or 0)
+    local cached = polyCache[key]
+    if cached then return cached end
+    size = q / 16
     local pts = {}
     -- Triangles: vertex on +X (facing). Squares: pi/4 so they sit on a face.
     local start = (sides == 3) and 0 or ((sides % 2 == 0) and (math.pi / sides) or 0)
@@ -389,6 +404,7 @@ local function polyRegular(sides, size, star)
             pts[#pts + 1] = math.sin(a) * size
         end
     end
+    polyCache[key] = pts
     return pts
 end
 
@@ -732,43 +748,57 @@ local function meshTri(x1, y1, z1, r1, g1, b1, a1, x2, y2, z2, r2, g2, b2, a2, x
     meshPush(x3, y3, z3, r3, g3, b3, a3, n3)
 end
 
+local compactVerts = {}
+
 local function meshFlush()
     if meshN < 3 then
         meshN = 0
         return
     end
     if not triMesh or triMesh:getVertexCount() < meshN then
-        triMesh = love.graphics.newMesh(MESH_FORMAT, math.max(meshN, 1024), "triangles", "stream")
+        triMesh = love.graphics.newMesh(MESH_FORMAT, math.max(meshN * 2, 4096), "triangles", "stream")
     end
     for i = 1, meshN do
-        triMesh:setVertex(i, meshVerts[i])
+        compactVerts[i] = meshVerts[i]
     end
+    for i = #compactVerts, meshN + 1, -1 do
+        compactVerts[i] = nil
+    end
+    triMesh:setVertices(compactVerts)
     triMesh:setDrawRange(1, meshN)
-    local prev
     if depthShader then
-        prev = love.graphics.getShader()
         love.graphics.setShader(depthShader)
     end
     love.graphics.setColor(1, 1, 1, 1)
     love.graphics.draw(triMesh)
     if depthShader then
-        if prev then
-            love.graphics.setShader(prev)
-        else
-            love.graphics.setShader()
-        end
+        love.graphics.setShader()
     end
     meshN = 0
 end
 
 local hullPts = {}
+local hullN = 0
 
 local function hullReset()
-    hullPts = {}
+    hullN = 0
 end
 
 local function hullAdd(x, y, z)
-    hullPts[#hullPts + 1] = { x, y, z or 0.5 }
+    hullN = hullN + 1
+    local p = hullPts[hullN]
+    if p then
+        p[1], p[2], p[3] = x, y, z or 0.5
+    else
+        hullPts[hullN] = { x, y, z or 0.5 }
+    end
+end
+
+local function hullList()
+    for i = #hullPts, hullN + 1, -1 do
+        hullPts[i] = nil
+    end
+    return hullPts
 end
 
 local function meshLitTri(ax, ay, az, anx, any, anz,
@@ -789,7 +819,7 @@ end
 
 -- Outer silhouette ring. Depth sits at the back of this mesh so closer
 -- parts (barrels, other tanks) occlude it; width is fully outside the fill.
-local function strokeLoop(loop, border, opacity, stroke)
+local function strokeLoop(loop, border, opacity, stroke, append)
     if not loop or #loop < 3 then return end
     local w = math.max(tonumber(stroke) or 3, 0.8)
     local farZ = 0.001
@@ -803,7 +833,9 @@ local function strokeLoop(loop, border, opacity, stroke)
     if Render._style == "shaded" then
         love.graphics.setDepthMode("lequal", true)
     end
-    meshReset()
+    if not append then
+        meshReset()
+    end
     local n = #loop
     for i = 1, n do
         local j = (i % n) + 1
@@ -818,11 +850,13 @@ local function strokeLoop(loop, border, opacity, stroke)
             o0[1], o0[2], z, r, g, b, a,
             o1[1], o1[2], z, r, g, b, a)
     end
-    meshFlush()
+    if not append then
+        meshFlush()
+    end
 end
 
-local function strokeOutline(points, border, opacity, stroke)
-    strokeLoop(convexHull(points), border, opacity, stroke)
+local function strokeOutline(points, border, opacity, stroke, append)
+    strokeLoop(convexHull(points), border, opacity, stroke, append)
 end
 
 -- 3D bevel rim around a prism. Offset lives in object XY so side walls stay
@@ -902,10 +936,10 @@ local function finishMesh(border, opacity, stroke, emit)
     hullReset()
     meshReset()
     emit()
-    meshFlush()
     if stroke and stroke > 0.2 and opacity > 0.02 then
-        strokeOutline(hullPts, border, opacity, stroke)
+        strokeOutline(hullList(), border, opacity, stroke, true)
     end
+    meshFlush()
 end
 
 local function drawSphere3D(radius, fill, border, opacity, stroke, angle, ox, oy, oz)
@@ -1225,6 +1259,10 @@ end
 local function fillCenteredPoly(pts)
     local n = #pts / 2
     if n < 3 then return end
+    if ptsConvex(pts) then
+        love.graphics.polygon("fill", pts)
+        return
+    end
     for i = 1, n do
         local j = (i % n) + 1
         love.graphics.polygon("fill",
@@ -1460,15 +1498,36 @@ local function childSort(a, b)
     return az < bz
 end
 
+local splitPool = {}
+local splitDepth = 0
+
 local function splitChildren(e)
-    local below, above = {}, {}
-    for i = 1, #(e.children or {}) do
-        local c = e.children[i]
-        if flagged(c.style, StyleFlags.showsAboveParent) then
-            above[#above + 1] = c
-        else
-            below[#below + 1] = c
+    splitDepth = splitDepth + 1
+    local slot = splitPool[splitDepth]
+    if not slot then
+        slot = { {}, {} }
+        splitPool[splitDepth] = slot
+    end
+    local below, above = slot[1], slot[2]
+    local nb, na = 0, 0
+    local kids = e.children
+    if kids then
+        for i = 1, #kids do
+            local c = kids[i]
+            if flagged(c.style, StyleFlags.showsAboveParent) then
+                na = na + 1
+                above[na] = c
+            else
+                nb = nb + 1
+                below[nb] = c
+            end
         end
+    end
+    for i = #below, nb + 1, -1 do
+        below[i] = nil
+    end
+    for i = #above, na + 1, -1 do
+        above[i] = nil
     end
     table.sort(below, childSort)
     table.sort(above, childSort)
@@ -1521,6 +1580,7 @@ drawNode = function(e, parentAngle, parentOpacity, parentFlash, parentHit, paren
         end
         love.graphics.pop()
         kids(above)
+        splitDepth = splitDepth - 1
         return
     end
 
@@ -1546,9 +1606,11 @@ drawNode = function(e, parentAngle, parentOpacity, parentFlash, parentHit, paren
         drawName(e, drawOp)
     end
     love.graphics.pop()
+    splitDepth = splitDepth - 1
 end
 
 function Render.draw(world)
+    splitDepth = 0
     local camX, camY, fov = Render.view(world)
     Render._camX, Render._camY, Render._fov = camX, camY, fov
     do
@@ -1572,9 +1634,18 @@ function Render.draw(world)
     drawArenaBorder(arena)
 
     local roots = {}
+    local halfW, halfH = viewW * 0.5, viewH * 0.5
+    local x0, x1 = camX - halfW, camX + halfW
+    local y0, y1 = camY - halfH, camY + halfH
     for _, e in pairs(world.entities) do
         if e.physics and not e.parentEntity and not e.camera and not e.arena and not e.barrel then
-            roots[#roots + 1] = e
+            local px = e.ix or (e.position and e.position.x) or 0
+            local py = e.iy or (e.position and e.position.y) or 0
+            local size = e.physics.size or 0
+            local pad = size * 4 + 160
+            if px + pad >= x0 and px - pad <= x1 and py + pad >= y0 and py - pad <= y1 then
+                roots[#roots + 1] = e
+            end
         end
     end
     table.sort(roots, childSort)
@@ -1755,9 +1826,25 @@ local function iconAddon(id, layer, bodyR, stroke, alpha)
     end
 end
 
+local paintTankIcon, bakeTankIcon
+
 function Render.drawTankIcon(def, cx, cy, box, alpha)
     if not def or box <= 4 then return end
     alpha = alpha or 1
+    local canvas = bakeTankIcon(def)
+    if canvas then
+        local w = canvas:getWidth()
+        local mode, alphamode = love.graphics.getBlendMode()
+        love.graphics.setBlendMode("alpha", "premultiplied")
+        love.graphics.setColor(alpha, alpha, alpha, alpha)
+        love.graphics.draw(canvas, cx, cy, 0, box / w, box / w, w * 0.5, w * 0.5)
+        love.graphics.setBlendMode(mode, alphamode)
+        return
+    end
+    paintTankIcon(def, cx, cy, box, alpha)
+end
+
+paintTankIcon = function(def, cx, cy, box, alpha)
     local bodyR = 50
     local maxR = bodyR
     local barrels = def.barrels or {}
@@ -1814,6 +1901,54 @@ function Render.drawTankIcon(def, cx, cy, box, alpha)
         love.graphics.setDepthMode()
         _camX, _camY, _camZ, _focal = savedX, savedY, savedZ, savedF
     end
+end
+
+local iconCache = {}
+local ICON_PX = 256
+
+function Render.invalidateIconCache()
+    for k, canvas in pairs(iconCache) do
+        if canvas and canvas.release then
+            pcall(canvas.release, canvas)
+        end
+        iconCache[k] = nil
+    end
+end
+
+local function iconCacheKey(def)
+    return tostring(def.id or def.name or def) .. "\0" .. Render._style .. "\0" .. string.format("%.3f", Render._innerShadow or 0)
+end
+
+bakeTankIcon = function(def)
+    local key = iconCacheKey(def)
+    local cached = iconCache[key]
+    if cached then return cached end
+    local canvas = love.graphics.newCanvas(ICON_PX, ICON_PX, { dpiscale = 1, msaa = 0 })
+    canvas:setFilter("linear", "linear")
+    love.graphics.push()
+    love.graphics.origin()
+    local prevShader = love.graphics.getShader()
+    local prevScissor = { love.graphics.getScissor() }
+    love.graphics.setScissor()
+    love.graphics.setShader()
+    local okDepth = pcall(love.graphics.setCanvas, { canvas, depth = true })
+    if not okDepth then
+        love.graphics.setCanvas(canvas)
+    end
+    love.graphics.clear(0, 0, 0, 0, true, true)
+    paintTankIcon(def, ICON_PX * 0.5, ICON_PX * 0.5, ICON_PX, 1)
+    love.graphics.setCanvas()
+    if prevShader then
+        love.graphics.setShader(prevShader)
+    else
+        love.graphics.setShader()
+    end
+    if prevScissor[1] then
+        love.graphics.setScissor(unpack(prevScissor))
+    end
+    love.graphics.pop()
+    iconCache[key] = canvas
+    return canvas
 end
 
 Render.hex = hex
