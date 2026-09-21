@@ -236,6 +236,10 @@ function ClientCamera:updateView(tick)
         local p = entity.physicsData.values
         local wdt = p.sides == 2 and p.size / 2 or p.size
         local size = p.sides == 2 and p.width / 2 or p.size
+        if bit.band(p.flags or 0, Enums.PhysicsFlags.isBeam) ~= 0 then
+            local rad = math.max(wdt, size)
+            wdt, size = rad, rad
+        end
         local pos = entity.positionData.values
         if pos.x - wdt < r and pos.y + size > t and pos.x + wdt > l and pos.y - size < b then
             if entity ~= self.cameraData.values.player and not (entity.styleData.values.opacity == 0 and not entity.deletionAnimation) then

@@ -18,7 +18,8 @@ local DevTank = {
     Spectator = -12,
     TheCroc = -13,
     Railgun = -14,
-    Commander = -15
+    Commander = -15,
+    DeathRay = -16
 }
 
 local defaultStats = {
@@ -168,7 +169,20 @@ local DevTankDefinitions = {
         angle = 0, delay = 0, size = 70, offset = 0, recoil = 0.5, addon = nil, droneCount = 12, canControlDrones = true,
         bullet = { type = "minion", speed = 0.8, damage = 0.5, health = 2, scatterRate = 1, lifeLength = -1, absorbtionFactor = 1, sizeRatio = 1 },
         reload = 0.5, width = 42, isTrapezoid = true, trapezoidDirection = 0
-    }} })
+    }} }),
+    tank({
+        id = DevTank.DeathRay,
+        name = "Death Ray",
+        upgradeMessage = "Hold fire to melt anything in a straight line",
+        barrels = {{
+            angle = 0, delay = 0, size = 145, offset = 0, recoil = 5, addon = nil,
+            bullet = { type = "deathray", speed = 1, damage = 6, health = 8, scatterRate = 0, lifeLength = 0.22, absorbtionFactor = 0, sizeRatio = 0.85 },
+            reload = 1.8, width = 34, isTrapezoid = true, trapezoidDirection = math.pi
+        }},
+        fieldFactor = 0.8,
+        speed = 0.95,
+        preAddon = "pronounced"
+    })
 }
 
 DevTankDefinitions.DevTank = DevTank

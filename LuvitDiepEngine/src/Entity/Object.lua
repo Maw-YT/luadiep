@@ -71,6 +71,10 @@ function ObjectEntity.isColliding(objA, objB)
     if not objA.isPhysical or not objB.isPhysical then return false end
     local physicsA = objA.physicsData.values
     local physicsB = objB.physicsData.values
+    if bit.band(physicsA.flags or 0, PhysicsFlags.isBeam) ~= 0
+        or bit.band(physicsB.flags or 0, PhysicsFlags.isBeam) ~= 0 then
+        return false
+    end
     local relationsA = objA.relationsData.values
     local relationsB = objB.relationsData.values
     local positionA = objA.positionData.values

@@ -74,10 +74,33 @@ local function getTankByName(tankName)
     return nil
 end
 
+-- Cached JSON array for /api/tanks: vanilla defs (with null holes) plus dev tanks.
+local clientJson = nil
+
+local function exportClientJson()
+    if clientJson then return clientJson end
+    local list = {}
+    for i = 1, maxn do
+        list[i] = parsed[i]
+    end
+    local DevTankDefinitions = require("./DevTankDefinitions")
+    for i = 1, #DevTankDefinitions do
+        list[#list + 1] = DevTankDefinitions[i]
+    end
+    local ok, encoded = pcall(json.stringify, list)
+    if ok and type(encoded) == "string" and encoded:sub(1, 1) == "[" then
+        clientJson = encoded
+        return clientJson
+    end
+    clientJson = raw
+    return clientJson
+end
+
 return {
     TankDefinitions = TankDefinitions,
     TankCount = TankCount,
     visibilityRateDamage = visibilityRateDamage,
     getTankById = getTankById,
-    getTankByName = getTankByName
+    getTankByName = getTankByName,
+    exportClientJson = exportClientJson
 }

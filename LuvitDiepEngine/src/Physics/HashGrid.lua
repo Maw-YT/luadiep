@@ -5,6 +5,7 @@
 
 local class = require("../class")
 local PackedEntitySet = require("./PackedEntitySet")
+local PhysicsFlags = require("../Const/Enums").PhysicsFlags
 
 local CELL_SHIFT = 8
 local MAX_ENTITY_COUNT = 16384
@@ -50,12 +51,25 @@ local function cellKey(self, x, y)
     return math.abs(x + (y * self.hashMul))
 end
 
+local function lineExtents(physics)
+    local halfWidth = physics.size / 2
+    local halfHeight = physics.width / 2
+    if bit.band(physics.flags or 0, PhysicsFlags.isBeam) ~= 0 then
+        local rad = math.max(halfWidth, halfHeight)
+        return rad, rad
+    end
+    return halfWidth, halfHeight
+end
+
 function HashGrid:insert(entity)
     local physics = entity.physicsData.values
     local pos = entity.positionData.values
     local isLine = physics.sides == 2
     local halfWidth = isLine and (physics.size / 2) or physics.size
     local halfHeight = isLine and (physics.width / 2) or physics.size
+    if isLine then
+        halfWidth, halfHeight = lineExtents(physics)
+    end
 
     local topX = bit.arshift(bit.tobit(pos.x - halfWidth - self.gameLeftX), CELL_SHIFT)
     local topY = bit.arshift(bit.tobit(pos.y - halfHeight - self.gameTopY), CELL_SHIFT)
@@ -148,6 +162,9 @@ function HashGrid:retrieveEntitiesByEntity(entity)
     local isLine = physics.sides == 2
     local halfWidth = isLine and (physics.size / 2) or physics.size
     local halfHeight = isLine and (physics.width / 2) or physics.size
+    if isLine then
+        halfWidth, halfHeight = lineExtents(physics)
+    end
     return self:retrieve(pos.x, pos.y, halfWidth, halfHeight)
 end
 

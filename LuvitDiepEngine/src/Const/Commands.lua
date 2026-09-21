@@ -32,12 +32,15 @@ local commandDefinitions = {
 
 local commandCallbacks = {}
 
-function commandCallbacks.game_set_tank(client, tankNameArg)
+function commandCallbacks.game_set_tank(client, ...)
     local TankBody = require("../Entity/Tank/TankBody")
+    local tankNameArg = table.concat({ ... }, " ")
+    tankNameArg = tankNameArg:gsub("^%s+", ""):gsub("%s+$", ""):gsub("%s+", " ")
     local tankDef = TankDefs.getTankByName(tankNameArg)
     local player = client.camera and client.camera.cameraData.player
     if not Entity.exists(player) or not TankBody.isTank(player) then return "Spawn first" end
-    if not tankDef then return "Unknown tank: " .. tostring(tankNameArg or "") end
+    if tankNameArg == "" then return "Usage: game_set_tank [tank]" end
+    if not tankDef then return "Unknown tank: " .. tostring(tankNameArg) end
     if tankDef.flags and tankDef.flags.devOnly and client.accessLevel ~= AccessLevel.FullAccess then
         return "That tank needs full access"
     end

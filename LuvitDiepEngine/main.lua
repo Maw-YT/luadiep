@@ -86,8 +86,10 @@ local function handleApi(pathname, socket)
         return
     end
     if rest == "/tanks" then
-        -- Client expects a JSON array (0-indexed Lua tables stringify as objects).
-        return sendFile(socket, pathJoin(ROOT, "src", "Const", "TankDefinitions.json"))
+        -- JSON array of vanilla defs (null holes keep ids stable) plus appended dev tanks.
+        return writeHttp(socket, "200 OK", {
+            ["Content-Type"] = "application/json; charset=utf-8"
+        }, TankDefs.exportClientJson())
     end
     if rest == "/servers" then
         local servers = {}

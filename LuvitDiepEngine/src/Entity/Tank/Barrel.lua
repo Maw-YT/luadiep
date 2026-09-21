@@ -133,6 +133,8 @@ function Barrel:shoot()
         end)
     elseif btype == "croc" then
         projectile = require("./Projectile/CrocSkimmer"):new(self, self.tank, tankDefinition, angle)
+    elseif btype == "deathray" then
+        projectile = require("./Projectile/DeathRay"):new(self, self.tank, tankDefinition, angle)
     else
         util.log("Ignoring attempt to spawn projectile of type " .. tostring(btype))
     end

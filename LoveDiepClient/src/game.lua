@@ -1,7 +1,6 @@
 local bit = require("bit")
 local class = require("src.class")
 local config = require("src.config")
-local json = require("src.json")
 local WebSocket = require("src.net.websocket")
 local Url = require("src.net.url")
 local Reader = require("src.coder.reader")
@@ -17,6 +16,7 @@ local TankTree = require("src.tanktree")
 local Achievements = require("src.achievements")
 local Servers = require("src.servers")
 local Changelog = require("src.changelog")
+local Tanks = require("src.tanks")
 
 local GAMEMODES = Servers.fallback()
 
@@ -30,28 +30,8 @@ local FOCUS_ORDER = { "spawnName", "url", "password" }
 
 local Game = class()
 
-local function loadTanks()
-    local byId = {}
-    local count = 0
-    local raw = love.filesystem.read("assets/tanks.json")
-    if not raw then return byId, 1 end
-    local ok, parsed = pcall(json.decode, raw)
-    if not ok or type(parsed) ~= "table" then return byId, 1 end
-    for i = 1, #parsed do
-        local def = parsed[i]
-        if type(def) == "table" and def ~= json.null then
-            local id = def.id
-            if id == nil then id = i - 1 end
-            byId[id] = def
-            count = count + 1
-        end
-    end
-    if count < 1 then count = 1 end
-    return byId, count
-end
-
 function Game:init()
-    self.tanksById, self.tankCount = loadTanks()
+    self.tanksById, self.tankCount = {}, 1
     self.world = World:new()
     self.ws = nil
     self.state = "menu"
@@ -99,6 +79,7 @@ function Game:init()
     Console.ensure(self)
     Servers.fetch(self)
     Changelog.fetch(self)
+    Tanks.fetch(self)
 end
 
 function Game:apiModes()
@@ -514,6 +495,7 @@ function Game:update(dt)
     Console.update(self, dt)
     Servers.update(self, dt)
     Changelog.update(self, dt)
+    Tanks.update(self, dt)
     TankTree.update(self, dt)
     Achievements.update(dt)
     if self.treeOpen or self.optionsOpen or self.paused then

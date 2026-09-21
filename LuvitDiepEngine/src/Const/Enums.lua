@@ -205,7 +205,7 @@ Enums.PhysicsFlags = {
     isSolidWall = bit.lshift(1, 4),
     onlySameOwnerCollision = bit.lshift(1, 5),
     isBase = bit.lshift(1, 6),
-    _unknown1 = bit.lshift(1, 7),
+    isBeam = bit.lshift(1, 7),
     canEscapeArena = bit.lshift(1, 8)
 }
 

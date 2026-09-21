@@ -320,7 +320,7 @@ function Console.submit(game)
     for i = 2, #parts do
         args[#args + 1] = parts[i]
     end
-    if cmd == "game_announce" and #args > 0 then
+    if (cmd == "game_announce" or cmd == "game_set_tank") and #args > 0 then
         args = { table.concat(args, " ") }
     end
     if not game:connected() then

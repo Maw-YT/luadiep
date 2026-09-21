@@ -75,6 +75,59 @@ local function mixHex(a, b, t)
     return r * 65536 + g * 256 + bl
 end
 
+local function rgbToHsv(r, g, b)
+    local maxv = math.max(r, g, b)
+    local minv = math.min(r, g, b)
+    local d = maxv - minv
+    local h = 0
+    if d > 1e-5 then
+        if maxv == r then
+            h = ((g - b) / d) % 6
+        elseif maxv == g then
+            h = (b - r) / d + 2
+        else
+            h = (r - g) / d + 4
+        end
+        h = h / 6
+        if h < 0 then h = h + 1 end
+    end
+    return h, (maxv <= 0 and 0 or d / maxv), maxv
+end
+
+local function hsvToRgb(h, s, v)
+    h = h % 1
+    if h < 0 then h = h + 1 end
+    s = math.max(0, math.min(1, s))
+    v = math.max(0, math.min(1.2, v))
+    local i = math.floor(h * 6)
+    local f = h * 6 - i
+    local p = v * (1 - s)
+    local q = v * (1 - f * s)
+    local t = v * (1 - (1 - f) * s)
+    i = i % 6
+    if i == 0 then return v, t, p end
+    if i == 1 then return q, v, p end
+    if i == 2 then return p, v, t end
+    if i == 3 then return p, q, v end
+    if i == 4 then return t, p, v end
+    return v, p, q
+end
+
+local function beamTint(fill, u, time, layer)
+    local r, g, b = hex(fill)
+    local h, s, v = rgbToHsv(r, g, b)
+    if s < 0.18 then
+        s = 0.55
+        v = math.max(v, 0.7)
+    end
+    local wobble = math.sin(u * 13.7 + time * 7.4 + layer * 1.9) * 0.075
+        + math.sin(u * 4.6 - time * 4.3 + layer) * 0.05
+    h = h + wobble + layer * 0.04
+    s = math.min(1, math.max(0.28, s * 0.82 + 0.22 + 0.2 * math.sin(time * 5.2 + u * 9 + layer * 2)))
+    v = math.min(1.15, 0.55 + v * (0.5 + 0.42 * (0.5 + 0.5 * math.sin(time * 8.5 + u * 12 + layer))))
+    return hsvToRgb(h, s, v)
+end
+
 -- hit=1 red, hit=0.5 white, hit=0 original color
 local function applyHit(fill, hit)
     if not hit or hit <= 0 then return fill end
@@ -1308,6 +1361,136 @@ local function shootRecoil(e)
     return rec, 2 * hl * (rec - 1), math.cos(dir) < 0, src == e
 end
 
+local function updateBeamParticles(e, hl, hw, dt)
+    local parts = e._beamFx
+    if not parts then
+        parts = {}
+        e._beamFx = parts
+    end
+    local acc = (e._beamAcc or 0) + dt
+    local step = 0.02
+    while acc >= step do
+        acc = acc - step
+        for side = -1, 1, 2 do
+            for _ = 1, 3 do
+                local spread = (math.random() - 0.5) * 1.35
+                local ang = (side > 0 and 0 or math.pi) + spread
+                local spd = 55 + math.random() * 110
+                parts[#parts + 1] = {
+                    x = side * hl,
+                    y = (math.random() - 0.5) * hw * 0.7,
+                    vx = math.cos(ang) * spd,
+                    vy = math.sin(ang) * spd + (math.random() - 0.5) * 40,
+                    age = 0,
+                    life = 0.16 + math.random() * 0.32,
+                    size = hw * (0.28 + math.random() * 0.7),
+                    layer = (math.random() * 2 - 1)
+                }
+            end
+        end
+    end
+    e._beamAcc = acc
+    local i = 1
+    while i <= #parts do
+        local p = parts[i]
+        p.age = p.age + dt
+        p.x = p.x + p.vx * dt
+        p.y = p.y + p.vy * dt
+        p.vx = p.vx * (1 - dt * 2.4)
+        p.vy = p.vy * (1 - dt * 2.4)
+        if p.age >= p.life then
+            parts[i] = parts[#parts]
+            parts[#parts] = nil
+        else
+            i = i + 1
+        end
+    end
+    while #parts > 72 do
+        table.remove(parts, 1)
+    end
+    return parts
+end
+
+local function drawBeamRibbon(hl, hw, fill, opacity, time, layer, amp, freq, phase, widthMul, alphaMul)
+    local segs = math.min(42, math.max(14, math.floor(hl / 48)))
+    local top, bot = {}, {}
+    for i = 0, segs do
+        local u = i / segs
+        local x = -hl + u * hl * 2
+        local wave = math.sin(u * freq + time * 6.4 + phase) * amp
+            + math.sin(u * (freq * 0.45) - time * 3.1 + phase * 0.7) * amp * 0.45
+        local swell = 1 + 0.22 * math.sin(u * 8.2 + time * 5.5 + layer)
+        local half = hw * widthMul * swell
+        top[#top + 1] = x
+        top[#top + 1] = -half + wave
+        bot[#bot + 1] = x
+        bot[#bot + 1] = half + wave
+    end
+    for i = 0, segs - 1 do
+        local u = (i + 0.5) / segs
+        local r, g, b = beamTint(fill, u, time, layer)
+        love.graphics.setColor(r, g, b, opacity * alphaMul)
+        local i0 = i * 2 + 1
+        local i1 = (i + 1) * 2 + 1
+        love.graphics.polygon("fill",
+            top[i0], top[i0 + 1],
+            top[i1], top[i1 + 1],
+            bot[i1], bot[i1 + 1],
+            bot[i0], bot[i0 + 1])
+    end
+end
+
+local function drawBeam(e, hl, hw, fill, opacity, worldAngle)
+    if hl < 2 or hw < 0.4 or opacity <= 0.02 then return end
+    local time = love.timer.getTime()
+    local dt = love.timer.getDelta()
+    if dt > 0.05 then dt = 0.05 end
+    local parts = updateBeamParticles(e, hl, hw, dt)
+    local amp = math.max(hw * 0.85, 6)
+
+    local function paint()
+        local mode, alphaMode = love.graphics.getBlendMode()
+        love.graphics.setBlendMode("add", "alphamultiply")
+        drawBeamRibbon(hl, hw, fill, opacity, time, -1.1, amp * 1.35, 9.2, 0.4, 1.85, 0.16)
+        drawBeamRibbon(hl, hw, fill, opacity, time, 0.9, amp * 1.05, 11.5, 1.7, 1.35, 0.28)
+        drawBeamRibbon(hl, hw, fill, opacity, time, 0.0, amp * 0.7, 14.0, 0.2, 0.95, 0.55)
+        love.graphics.setBlendMode("alpha", "alphamultiply")
+        drawBeamRibbon(hl, hw, fill, opacity, time, 0.15, amp * 0.35, 16.5, 2.3, 0.42, 0.85)
+        love.graphics.setBlendMode(mode, alphaMode)
+
+        for side = -1, 1, 2 do
+            local u = side > 0 and 1 or 0
+            local r, g, b = beamTint(fill, u, time, side)
+            local pulse = 0.65 + 0.35 * math.sin(time * 11 + side * 2)
+            love.graphics.setColor(r, g, b, opacity * 0.55 * pulse)
+            love.graphics.circle("fill", side * hl, 0, hw * (1.15 + 0.35 * pulse))
+            love.graphics.setColor(1, 1, 1, opacity * 0.35 * pulse)
+            love.graphics.circle("fill", side * hl, 0, hw * 0.45)
+        end
+
+        for i = 1, #parts do
+            local p = parts[i]
+            local fade = 1 - (p.age / p.life)
+            fade = fade * fade
+            local u = (p.x / math.max(hl, 1) + 1) * 0.5
+            local r, g, b = beamTint(fill, u, time + p.age, p.layer)
+            love.graphics.setColor(r, g, b, opacity * fade * 0.85)
+            love.graphics.circle("fill", p.x, p.y, p.size * (0.45 + fade * 0.7))
+        end
+    end
+
+    if Render._style == "shaded" then
+        love.graphics.push()
+        love.graphics.rotate(worldAngle or 0)
+        love.graphics.setDepthMode("always", false)
+        paint()
+        love.graphics.setDepthMode("lequal", true)
+        love.graphics.pop()
+    else
+        paint()
+    end
+end
+
 local function drawBody(e, opacity, hit, worldAngle, worldX, worldY, worldZ)
     local phy = e.physics
     local sty = e.style
@@ -1344,6 +1527,9 @@ local function drawBody(e, opacity, hit, worldAngle, worldX, worldY, worldZ)
         -- cylinders; maze walls are boxes. Team bases stay flat 2D even in 3D.
         local isBarrelShape = e.barrel or trap
         local isBase = bit.band(phy.flags or 0, PhysicsFlags.isBase) ~= 0
+        local isWall = bit.band(phy.flags or 0, PhysicsFlags.isSolidWall) ~= 0
+        local isBeam = bit.band(phy.flags or 0, PhysicsFlags.isBeam) ~= 0
+            or (trap and not e.barrel and not isBase and not isWall and size >= math.max(w, 1) * 8)
         if isBase then
             love.graphics.push()
             love.graphics.rotate(worldAngle or 0)
@@ -1356,8 +1542,9 @@ local function drawBody(e, opacity, hit, worldAngle, worldX, worldY, worldZ)
                 love.graphics.setDepthMode("lequal", true)
             end
             love.graphics.pop()
+        elseif isBeam then
+            drawBeam(e, hl, hw, fill, opacity, worldAngle)
         elseif Render._style == "shaded" and not isBarrelShape then
-            local isWall = bit.band(phy.flags or 0, PhysicsFlags.isSolidWall) ~= 0
             local thick = math.min(size, w)
             local height = isWall and prismHeight(math.min(thick, 900)) or prismHeight(math.min(thick, 400))
             local pts = {
