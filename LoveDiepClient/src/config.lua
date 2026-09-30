@@ -21,7 +21,9 @@ local function magicNum(build)
             seed = bit.bxor(seed, 1)
         end
     end
-    return bit.tobit(res)
+    res = bit.tobit(res)
+    if res < 0 then res = res + 4294967296 end
+    return res
 end
 
 config.magicNum = magicNum(config.buildHash)

@@ -9,6 +9,7 @@ local Tanks = {}
 local fetch = nil
 local watchKey = ""
 local wait = nil
+local retryDelay = 1
 
 local function hostKey(game)
     local raw = game and game.url
@@ -100,11 +101,18 @@ function Tanks.fetch(game)
     fetch = HttpGet:new()
     fetch:get(target, function(ok, body)
         if not ok then
+            wait = retryDelay
+            retryDelay = math.min(retryDelay * 2, 15)
             return
         end
         local byId, count = parseTanks(body)
         if byId then
             apply(game, byId, count)
+            wait = nil
+            retryDelay = 1
+        else
+            wait = retryDelay
+            retryDelay = math.min(retryDelay * 2, 15)
         end
     end)
 end
@@ -118,6 +126,7 @@ function Tanks.update(game, dt)
     if key ~= watchKey then
         watchKey = key
         wait = 0.45
+        retryDelay = 1
     end
     if wait then
         wait = wait - (dt or 0)
