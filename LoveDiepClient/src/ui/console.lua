@@ -19,6 +19,7 @@ local ALIASES = {
     godmode = "game_godmode",
     announce = "game_announce",
     summon = "admin_summon",
+    bots = "admin_bots",
     killall = "admin_kill_all",
     kill = "admin_kill_entity",
     close = "admin_close_arena",
@@ -40,6 +41,7 @@ local FALLBACK_COMMANDS = {
     { name = "game_godmode", usage = "[on|off]", desc = "Toggle godmode (alias: god)" },
     { name = "game_announce", usage = "[message]", desc = "Broadcast a message" },
     { name = "admin_kill_all", usage = "", desc = "Kill all entities" },
+    { name = "admin_bots", usage = "[0-64]", desc = "Set AI player bots in this gamemode (alias: bots)" },
     { name = "admin_close_arena", usage = "", desc = "Close the arena" }
 }
 

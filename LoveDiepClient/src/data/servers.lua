@@ -17,18 +17,6 @@ local FALLBACK = {
 }
 
 local fetch = nil
-local watchKey = ""
-local wait = nil
-
-local function hostKey(game)
-    local raw = game and game.url
-    if type(raw) ~= "string" or raw:match("^%s*$") then
-        raw = config.defaultUrl
-    end
-    local parsed = Url.parse(raw)
-    if not parsed then return "" end
-    return parsed.host .. ":" .. tostring(parsed.port)
-end
 
 local function parseServers(body)
     local ok, parsed = pcall(json.decode, body or "")
@@ -79,7 +67,6 @@ function Servers.fetch(game)
     local modes = game.apiModes and game:apiModes() or game.modes or FALLBACK
     local target = Url.resolveApi(raw, (config.apiPath or "/api") .. "/servers", modes)
     if not target then return end
-    watchKey = hostKey(game)
     if fetch and not fetch.done then
         fetch.callback = nil
         fetch:finish(false, "replaced")
@@ -97,22 +84,9 @@ function Servers.fetch(game)
     end)
 end
 
-function Servers.update(game, dt)
+function Servers.update()
     if fetch and not fetch.done then
         fetch:update()
-    end
-    if not game then return end
-    local key = hostKey(game)
-    if key ~= watchKey then
-        watchKey = key
-        wait = 0.45
-    end
-    if wait then
-        wait = wait - (dt or 0)
-        if wait <= 0 then
-            wait = nil
-            Servers.fetch(game)
-        end
     end
 end
 

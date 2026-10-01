@@ -44,22 +44,10 @@ local FALLBACK = {
 
 local entries = nil
 local fetch = nil
-local watchKey = ""
-local wait = nil
 local scroll = 0
 local maxScroll = 0
 local panel = { x = 0, y = 0, w = 0, h = 0 }
 local visible = false
-
-local function hostKey(game)
-    local raw = game and game.url
-    if type(raw) ~= "string" or raw:match("^%s*$") then
-        raw = config.defaultUrl
-    end
-    local parsed = Url.parse(raw)
-    if not parsed then return "" end
-    return parsed.host .. ":" .. tostring(parsed.port)
-end
 
 local function asItems(src)
     local items = {}
@@ -157,7 +145,6 @@ function Changelog.fetch(game)
     local modes = game.apiModes and game:apiModes() or game.modes
     local target = Url.resolveApi(raw, (config.apiPath or "/api") .. "/changelog", modes)
     if not target then return end
-    watchKey = hostKey(game)
     if fetch and not fetch.done then
         fetch.callback = nil
         fetch:finish(false, "replaced")
@@ -175,22 +162,9 @@ function Changelog.fetch(game)
     end)
 end
 
-function Changelog.update(game, dt)
+function Changelog.update()
     if fetch and not fetch.done then
         fetch:update()
-    end
-    if not game then return end
-    local key = hostKey(game)
-    if key ~= watchKey then
-        watchKey = key
-        wait = 0.45
-    end
-    if wait then
-        wait = wait - (dt or 0)
-        if wait <= 0 then
-            wait = nil
-            Changelog.fetch(game)
-        end
     end
 end
 

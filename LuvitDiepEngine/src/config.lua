@@ -40,6 +40,7 @@ config.AccessLevel = {
 config.unbannableLevelMinimum = config.AccessLevel.FullAccess
 config.defaultAccessLevel = config.AccessLevel.BetaAccess
 config.maxPlayerLevel = 45
+config.botsPerGame = math.min(64, math.max(0, math.floor(tonumber(env.BOTS_PER_GAME or os.getenv("BOTS_PER_GAME") or "0") or 0)))
 
 local function magicNum(build)
     local seed, res, timer = 1, 0, 0

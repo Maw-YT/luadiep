@@ -10,6 +10,7 @@ local Settings = require("src.ui.settings")
 local Achievements = require("src.data.achievements")
 local Servers = require("src.data.servers")
 local Changelog = require("src.data.changelog")
+local Tanks = require("src.data.tanks")
 
 return function(Game)
 function Game:persistPassword()
@@ -150,7 +151,7 @@ function Game:syncGamemodeFromUrl()
 end
 
 function Game:play()
-    if self.world:isSpawned() or self.world:isWaitingStart() then
+    if self.world:isSpawned() then
         return
     end
     self:syncGamemodeFromUrl()
@@ -217,6 +218,7 @@ function Game:connect()
         Console.fetch(game)
         Servers.fetch(game)
         Changelog.fetch(game)
+        Tanks.fetch(game)
     end
     self.ws.onMessage = function(payload)
         game:onPacket(payload)

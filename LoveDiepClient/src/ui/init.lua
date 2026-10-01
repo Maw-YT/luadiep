@@ -410,7 +410,7 @@ function Hud.draw(game)
         W.box(buttons, 0, 0, sw, sh, function()
             game:send(Encode.toRespawn())
         end, "death")
-    elseif waiting then
+    elseif waiting and game.wantSpawn then
         local okCount, errCount = pcall(Play.drawCountdown, game, arena, sw, sh)
         if not okCount then
             print("[LoveDiepClient] countdown: " .. tostring(errCount))

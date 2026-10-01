@@ -46,7 +46,8 @@ function Game:textinput(text)
     if Console.textinput(self, text) then
         return
     end
-    if self.world:isSpawned() or self:showingDeath() or self.world:isWaitingStart() then
+    if self.world:isSpawned() or self:showingDeath()
+        or (self.world:isWaitingStart() and self.wantSpawn) then
         return
     end
     local focus, v, caret = self:fieldCaret()
@@ -176,8 +177,11 @@ function Game:keypressed(key, isrepeat)
             return
         end
     end
-    Input.keypressed(key)
-    if self.world:isSpawned() or self.world:isWaitingStart() then
+    if self.world:isSpawned() then
+        Input.keypressed(key)
+        return
+    end
+    if self.world:isWaitingStart() and self.wantSpawn then
         return
     end
     if self:showingDeath() then
@@ -225,8 +229,12 @@ function Game:keypressed(key, isrepeat)
             end
         end
     elseif key == "return" or key == "kpenter" or key == "enter" then
-        Hud.press("spawnbtn")
-        self:play()
+        if self.focus == "url" then
+            self:connect()
+        else
+            Hud.press("spawnbtn")
+            self:play()
+        end
     end
 end
 

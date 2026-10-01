@@ -87,6 +87,10 @@ function Client:acceptClient()
     self:write():u8(ClientBound.ServerInfo):stringNT(self.game.gamemode):stringNT(config.host):send()
     self:write():u8(ClientBound.PlayerCount):vu(GameServer.globalPlayerCount):send()
     self:write():u8(ClientBound.Accept):vi(self.accessLevel):send()
+    if self.isBot then
+        self.inputs = ClientInputs:new(self)
+        self.ai = nil
+    end
     local Camera = require("./Native/Camera")
     if Entity.exists(self.camera) then
         self.camera:delete()
@@ -106,6 +110,10 @@ function Client:terminate()
         return
     end
     self.terminated = true
+    if self.isBot and self.camera then
+        local player = self.camera.cameraData.values.player
+        if Entity.exists(player) then player:destroy(false) end
+    end
     self.game:removeClient(self)
     self.inputs.deleted = true
     self.inputs.movement.magnitude = 0
@@ -480,6 +488,12 @@ function Client:createAndSpawnPlayer(name)
     camera.relationsData.parent = tank
     tank:setTank(Tank.Basic)
     tank.nameData.values.name = name
+    if self.isBot then
+        self.ai = AIMod.AI:new(tank)
+        self.ai.viewRange = 2000
+        self.inputs = self.ai.inputs
+        tank.inputs = self.inputs
+    end
     camera:setLevel(camera.cameraData.values.respawnLevel)
     if self:hasCheated() then self:setHasCheated(true) end
     camera.entityState = bit.bor(EntityStateFlags.needsCreate, EntityStateFlags.needsDelete)
@@ -496,6 +510,9 @@ function Client:createAndSpawnPlayer(name)
 end
 
 function Client:tick(tick)
+    if self.isBot then
+        self.lastPingTick = tick
+    end
     local movement = { x = 0, y = 0 }
     if bit.band(self.inputs.flags, InputFlags.up) ~= 0 then movement.y = movement.y - 1 end
     if bit.band(self.inputs.flags, InputFlags.down) ~= 0 then movement.y = movement.y + 1 end
@@ -527,11 +544,16 @@ function Client:tick(tick)
         end
     elseif self.inputs.deleted then
         self.inputs = ClientInputs:new(self)
+        self.ai = nil
         self.camera.cameraData.player = nil
         self.camera.cameraData.respawnLevel = 0
         self.camera.cameraData.cameraX = 0
         self.camera.cameraData.cameraY = 0
         self.camera.cameraData.flags = bit.band(self.camera.cameraData.values.flags, bit.bnot(CameraFlags.showingDeathStats))
+    end
+    if self.isBot and self.camera and not Entity.exists(self.camera.cameraData.values.player)
+        and not self.game.clientsAwaitingSpawn[self] then
+        self.game.clientsAwaitingSpawn[self] = self.botName
     end
     if tick >= self.lastPingTick + 90 * config.tps then
         return self:terminate()

@@ -49,6 +49,7 @@ See `src/config.lua`. Useful environment variables:
 - `PORT` — HTTP / WebSocket port
 - `SERVER_INFO` — host id sent to clients
 - `DEV_PASSWORD_HASH` — SHA-256 hex of the developer password
+- `BOTS_PER_GAME` — initial AI-controlled player bots per gamemode (default `0`; FullAccess admins can use `admin_bots [0-64]`)
 
 `enableApi` is on. HTTP serves `/api/*` for tank lists, servers, and changelog. The frontend is LoveDiepClient, not a browser page.
 

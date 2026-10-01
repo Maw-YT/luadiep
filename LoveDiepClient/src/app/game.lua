@@ -42,7 +42,6 @@ function Game:init()
     self.wantSpawn = false
     self._lastSpawnSend = nil
     self.modes = Servers.fallback()
-    self._started = false
     self._connectedTo = ""
     self._authPassword = ""
     self.readyDelay = 0
@@ -66,9 +65,6 @@ function Game:init()
     Render.setInnerShadow(Settings.innerShadow)
     self.password = Settings.devPassword or ""
     Console.ensure(self)
-    Servers.fetch(self)
-    Changelog.fetch(self)
-    Tanks.fetch(self)
 end
 
 function Game:apiModes()
@@ -95,10 +91,6 @@ end
 
 function Game:update(dt)
     if dt > 0.25 then dt = 0.25 end
-    if not self._started then
-        self._started = true
-        self:connect()
-    end
     if self.ws then
         self.ws:update()
         if self.ws.state == "open" then

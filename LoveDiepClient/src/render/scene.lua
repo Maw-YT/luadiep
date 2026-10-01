@@ -369,6 +369,7 @@ local function syncCamera3D(viewH)
     viewH = viewH or (1080 / math.max(Render._fov or 0.35, 0.05))
     _camZ = math.max(viewH * 0.72, 420)
     _focal = _camZ
+    DEPTH_FAR = 0.95 / (_camZ + 1200)
 end
 
 local function begin3D(angle, ox, oy, oz)

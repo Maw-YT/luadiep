@@ -62,6 +62,7 @@ function GameServer:init(ArenaClass, name)
     self.playersOnMap = false
     self.clients = { size = 0 }
     self.clientsAwaitingSpawn = {}
+    self.botCount = 0
     self.enableAchievements = config.enableAchievements
     self.tick = 0
     self._arenaClass = ArenaClass
@@ -69,6 +70,39 @@ function GameServer:init(ArenaClass, name)
     self.arena = ArenaClass:new(self)
     self:_startTick()
     GameServer.games[#GameServer.games + 1] = self
+    self:setBotCount(config.botsPerGame)
+end
+
+function GameServer:addBot(index)
+    local Client = require("./Client")
+    local bot = Client:new(nil, self, "bot")
+    bot.isBot = true
+    bot.botIndex = index
+    bot.botName = "Bot " .. tostring(index)
+    bot:acceptClient()
+    self.clientsAwaitingSpawn[bot] = bot.botName
+end
+
+function GameServer:setBotCount(count)
+    count = tonumber(count)
+    if not count or count ~= math.floor(count) or count < 0 or count > 64 then
+        return false, "Usage: admin_bots [0-64]"
+    end
+    local bots = {}
+    for client in pairs(self.clients) do
+        if client ~= "size" and client.isBot then
+            bots[#bots + 1] = client
+        end
+    end
+    table.sort(bots, function(a, b) return a.botIndex < b.botIndex end)
+    while #bots > count do
+        table.remove(bots):terminate()
+    end
+    for i = #bots + 1, count do
+        self:addBot(i)
+    end
+    self.botCount = count
+    return true, "Bots set to " .. tostring(count)
 end
 
 function GameServer:addClient(client)
@@ -138,6 +172,9 @@ function GameServer:start()
     for client in pairs(self.clients) do
         if client ~= "size" then
             client:acceptClient()
+            if client.isBot then
+                self.clientsAwaitingSpawn[client] = client.botName
+            end
         end
     end
     self.running = true

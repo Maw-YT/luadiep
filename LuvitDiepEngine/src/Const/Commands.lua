@@ -27,6 +27,7 @@ local commandDefinitions = {
     admin_kill_all = { id = "admin_kill_all", description = "Kills all living entities in the arena", permissionLevel = AccessLevel.FullAccess, isCheat = false },
     admin_kill_entity = { id = "admin_kill_entity", usage = "[entityName]", description = "Kills all entities of the given type", permissionLevel = AccessLevel.FullAccess, isCheat = false },
     admin_close_arena = { id = "admin_close_arena", description = "Closes the current arena", permissionLevel = AccessLevel.FullAccess, isCheat = false },
+    admin_bots = { id = "admin_bots", usage = "[0-64]", description = "Sets the number of AI player bots in this gamemode", permissionLevel = AccessLevel.FullAccess, isCheat = false },
     game_achievement = { id = "game_achievement", usage = "[achievementName]", description = "Unlocks the given achievement", permissionLevel = AccessLevel.FullAccess, isCheat = false }
 }
 
@@ -219,6 +220,13 @@ function commandCallbacks.admin_close_arena(client)
     if client.camera then
         client.camera.game.arena:close()
     end
+end
+
+function commandCallbacks.admin_bots(client, countArg)
+    local game = client.game
+    if not game then return "No active gamemode" end
+    local ok, message = game:setBotCount(countArg)
+    return message
 end
 
 function commandCallbacks.game_achievement(client, nameArg)

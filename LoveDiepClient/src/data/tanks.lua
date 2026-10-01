@@ -7,19 +7,6 @@ local Render = require("src.render")
 local Tanks = {}
 
 local fetch = nil
-local watchKey = ""
-local wait = nil
-local retryDelay = 1
-
-local function hostKey(game)
-    local raw = game and game.url
-    if type(raw) ~= "string" or raw:match("^%s*$") then
-        raw = config.defaultUrl
-    end
-    local parsed = Url.parse(raw)
-    if not parsed then return "" end
-    return parsed.host .. ":" .. tostring(parsed.port)
-end
 
 local function addDef(byId, def, fallbackId)
     if type(def) ~= "table" or def == json.null then
@@ -93,7 +80,6 @@ function Tanks.fetch(game)
     local modes = game.apiModes and game:apiModes() or game.modes
     local target = Url.resolveApi(raw, (config.apiPath or "/api") .. "/tanks", modes)
     if not target then return end
-    watchKey = hostKey(game)
     if fetch and not fetch.done then
         fetch.callback = nil
         fetch:finish(false, "replaced")
@@ -101,39 +87,18 @@ function Tanks.fetch(game)
     fetch = HttpGet:new()
     fetch:get(target, function(ok, body)
         if not ok then
-            wait = retryDelay
-            retryDelay = math.min(retryDelay * 2, 15)
             return
         end
         local byId, count = parseTanks(body)
         if byId then
             apply(game, byId, count)
-            wait = nil
-            retryDelay = 1
-        else
-            wait = retryDelay
-            retryDelay = math.min(retryDelay * 2, 15)
         end
     end)
 end
 
-function Tanks.update(game, dt)
+function Tanks.update()
     if fetch and not fetch.done then
         fetch:update()
-    end
-    if not game then return end
-    local key = hostKey(game)
-    if key ~= watchKey then
-        watchKey = key
-        wait = 0.45
-        retryDelay = 1
-    end
-    if wait then
-        wait = wait - (dt or 0)
-        if wait <= 0 then
-            wait = nil
-            Tanks.fetch(game)
-        end
     end
 end
 
