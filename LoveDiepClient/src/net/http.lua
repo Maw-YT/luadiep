@@ -1,11 +1,14 @@
 local class = require("src.lib.class")
-local Tcp = require("src.net.tcp")
 local Url = require("src.net.url")
+local Web = require("src.net.web")
 
 local HttpGet = class()
 
 function HttpGet:init()
-    self.tcp = Tcp:new()
+    self._web = Web.active()
+    if not self._web then
+        self.tcp = require("src.net.tcp"):new()
+    end
     self.done = false
     self.buf = ""
     self.headerDone = false
@@ -18,7 +21,9 @@ end
 function HttpGet:finish(ok, body)
     if self.done then return end
     self.done = true
-    self.tcp:close()
+    if self.tcp then
+        self.tcp:close()
+    end
     local cb = self.callback
     self.callback = nil
     if cb then
@@ -38,6 +43,19 @@ function HttpGet:get(target, callback)
     end
     self.callback = callback
     self.startedAt = love.timer.getTime()
+    if self._web then
+        if type(target) ~= "table" or not target.host then
+            self:finish(false, "invalid url")
+            return self
+        end
+        local id, err = Web.fetch(Web.httpUrl(target))
+        if not id then
+            self:finish(false, err or "request failed")
+            return self
+        end
+        self._fetchId = id
+        return self
+    end
     if type(target) ~= "table" or not target.host then
         self:finish(false, "invalid url")
         return self
@@ -66,6 +84,33 @@ end
 
 function HttpGet:update()
     if self.done then return end
+    if self._web then
+        if self.startedAt > 0 and (love.timer.getTime() - self.startedAt) > 12 then
+            self:finish(false, "timed out")
+            return
+        end
+        local ev = Web.poll(self._fetchId)
+        if not ev then
+            return
+        end
+        local okFlag, status, count = ev:match("^http\t([01])\t(%d+)\t(%d+)$")
+        if not okFlag then
+            self:finish(false, "bad response")
+            return
+        end
+        local parts = {}
+        local n = tonumber(count) or 0
+        for i = 0, n - 1 do
+            parts[#parts + 1] = Web.body(self._fetchId, i)
+        end
+        local body = table.concat(parts)
+        if okFlag == "1" and tonumber(status) == 200 then
+            self:finish(true, body)
+        else
+            self:finish(false, "http " .. tostring(status))
+        end
+        return
+    end
     if self.startedAt > 0 and (love.timer.getTime() - self.startedAt) > 12 then
         self:finish(false, "timed out")
         return

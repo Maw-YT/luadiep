@@ -1,4 +1,5 @@
 local Render = require("src.render")
+local Web = require("src.net.web")
 local W = require("src.ui.widgets")
 local Servers = require("src.data.servers")
 local ChangelogPanel = require("src.ui.panels.changelog")
@@ -34,8 +35,9 @@ function M.drawHome(game, buttons, sw, sh, markHover, hoverScaleFn)
     local rows = math.ceil(count / cols)
     local extraH = (rows - 1) * 52
 
+    local showUrl = not Web.active()
     love.graphics.setColor(0.07, 0.08, 0.10, 0.72 * a)
-    local panelX, panelY, panelW, panelH = fx - 28, fy - 132, fieldW + 56, 448 + extraH
+    local panelX, panelY, panelW, panelH = fx - 28, fy - 132, fieldW + 56, 448 + extraH - (showUrl and 0 or 60)
     roundrect(panelX, panelY, panelW, panelH, 18)
 
     love.graphics.push()
@@ -131,8 +133,10 @@ function M.drawHome(game, buttons, sw, sh, markHover, hoverScaleFn)
     end, "spawnbtn")
 
     local rowY = playY + 68
-    love.graphics.setColor(0.7, 0.75, 0.82, 0.7 * a)
-    Render.print("URL", fx, rowY - 18)
+    if showUrl then
+        love.graphics.setColor(0.7, 0.75, 0.82, 0.7 * a)
+        Render.print("URL", fx, rowY - 18)
+    end
 
     local function smallField(key, x, y, w)
         local on = game.focus == key
@@ -179,13 +183,16 @@ function M.drawHome(game, buttons, sw, sh, markHover, hoverScaleFn)
             game:focusField(key)
         end, key, "ibeam")
     end
-    smallField("url", fx, rowY, fieldW)
+    if showUrl then
+        smallField("url", fx, rowY, fieldW)
+    end
 
+    local credY = showUrl and (rowY + 60) or rowY
     love.graphics.setColor(0.7, 0.75, 0.82, 0.7 * a)
-    Render.print("Dev password", fx, rowY + 42)
-    smallField("password", fx, rowY + 60, fieldW)
+    Render.print("Dev password", fx, credY - 18)
+    smallField("password", fx, credY, fieldW)
 
-    local statusY = rowY + 104
+    local statusY = credY + 44
     local modeLabel = tostring(game.gamemode or "ffa")
     for i = 1, #modes do
         if modes[i].id == game.gamemode then

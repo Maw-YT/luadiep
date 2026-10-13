@@ -1,5 +1,6 @@
 local Encode = require("src.protocol.encode")
 local Input = require("src.input")
+local Web = require("src.net.web")
 local Render = require("src.render")
 local Hud = require("src.ui")
 local Console = require("src.ui.console")
@@ -191,14 +192,18 @@ function Game:keypressed(key, isrepeat)
         return
     end
     if key == "tab" then
+        local order = FOCUS_ORDER
+        if Web.active() then
+            order = { "spawnName", "password" }
+        end
         local cur = 1
-        for i = 1, #FOCUS_ORDER do
-            if FOCUS_ORDER[i] == self.focus then
+        for i = 1, #order do
+            if order[i] == self.focus then
                 cur = i
                 break
             end
         end
-        self.focus = FOCUS_ORDER[(cur % #FOCUS_ORDER) + 1]
+        self.focus = order[(cur % #order) + 1]
         self:fieldCaret()
     elseif key == "left" or key == "right" then
         local focus, v, caret = self:fieldCaret()

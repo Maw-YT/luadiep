@@ -14,6 +14,7 @@ local Achievements = require("src.data.achievements")
 local Servers = require("src.data.servers")
 local Changelog = require("src.data.changelog")
 local Tanks = require("src.data.tanks")
+local Web = require("src.net.web")
 
 local Game = class()
 require("src.app.session")(Game)
@@ -26,6 +27,13 @@ function Game:init()
     self.state = "menu"
     self.error = nil
     self.url = config.defaultUrl
+    if Web.active() then
+        local host = Web.pageHost()
+        if host and host ~= "" then
+            config.defaultUrl = host
+            self.url = host
+        end
+    end
     self.gamemode = config.defaultGamemode
     self.password = ""
     self.spawnName = ""

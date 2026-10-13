@@ -1,4 +1,5 @@
 local Render = require("src.render")
+local Web = require("src.net.web")
 local State = require("src.ui.state")
 local W = require("src.ui.widgets")
 local Layout = require("src.ui.layout")
@@ -185,9 +186,11 @@ function M.drawOptions(game, buttons, sw, sh, markHover, hoverScaleFn)
     if game.styleMenuOpen then
         local opts = {
             { id = "new", label = "New (default)" },
-            { id = "shaded", label = "3D" },
             { id = "old", label = "Old" }
         }
+        if not Web.active() then
+            table.insert(opts, 2, { id = "shaded", label = "3D" })
+        end
         local dropY = by + bh + 6
         local dropH = #opts * 40 + 8
         love.graphics.setColor(0.10, 0.12, 0.16, 0.98)

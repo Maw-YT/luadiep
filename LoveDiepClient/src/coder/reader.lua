@@ -1,14 +1,46 @@
-local ffi = require("ffi")
 local bit = require("bit")
 local class = require("src.lib.class")
 
-pcall(function()
-    ffi.cdef[[
-        typedef union { float f; int32_t i; uint32_t u; uint8_t b[4]; } f32conv;
-    ]]
-end)
+local ffiOk, ffi = pcall(require, "ffi")
+local conv
+if ffiOk then
+    pcall(function()
+        ffi.cdef[[
+            typedef union { float f; int32_t i; uint32_t u; uint8_t b[4]; } f32conv;
+        ]]
+    end)
+    conv = ffi.new("f32conv")
+else
+    ffi = nil
+end
 
-local conv = ffi.new("f32conv")
+local function floatFromBits(b0, b1, b2, b3)
+    if conv then
+        conv.b[0] = b0
+        conv.b[1] = b1
+        conv.b[2] = b2
+        conv.b[3] = b3
+        return conv.f + 0.0
+    end
+    return love.data.unpack("<f", string.char(b0, b1, b2, b3))
+end
+
+local function floatFromInt(swapped)
+    if conv then
+        conv.i = swapped
+        return conv.f + 0.0
+    end
+    local u = swapped
+    if u < 0 then
+        u = u + 4294967296
+    end
+    return love.data.unpack("<f", string.char(
+        u % 256,
+        math.floor(u / 256) % 256,
+        math.floor(u / 65536) % 256,
+        math.floor(u / 16777216) % 256
+    ))
+end
 
 local Reader = class()
 
@@ -81,17 +113,16 @@ function Reader:vf()
         bit.band(bit.rshift(n, 8), 0xFF00),
         bit.rshift(n, 24)
     )
-    conv.i = swapped
-    return conv.f + 0.0
+    return floatFromInt(swapped)
 end
 
 function Reader:float()
-    conv.b[0] = self:_byte(self.at)
-    conv.b[1] = self:_byte(self.at + 1)
-    conv.b[2] = self:_byte(self.at + 2)
-    conv.b[3] = self:_byte(self.at + 3)
+    local b0 = self:_byte(self.at)
+    local b1 = self:_byte(self.at + 1)
+    local b2 = self:_byte(self.at + 2)
+    local b3 = self:_byte(self.at + 3)
     self.at = self.at + 4
-    return conv.f + 0.0
+    return floatFromBits(b0, b1, b2, b3)
 end
 
 function Reader:float64Precision()

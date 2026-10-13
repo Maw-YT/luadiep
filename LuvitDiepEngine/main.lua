@@ -12,6 +12,7 @@ io.stderr:setvbuf("no")
 
 local net = require("net")
 local fs = require("fs")
+local uv = require("uv")
 local pathJoin = require("pathjoin").pathJoin
 local url = require("url")
 local json = require("json")
@@ -32,14 +33,34 @@ local SurvivalArena = require("./src/Gamemodes/Survival")
 local DominationArena = require("./src/Gamemodes/Domination")
 local MothershipArena = require("./src/Gamemodes/Mothership")
 local SandboxArena = require("./src/Gamemodes/Sandbox")
+local Pack = require("./src/Web/Pack")
 
 math.randomseed(os.time())
 
 local ROOT = process.cwd()
 local connections = {}
 
+local function thisDir()
+    local src = debug.getinfo(1, "S").source or ""
+    if src:sub(1, 1) == "@" then
+        src = src:sub(2)
+    end
+    return src:match("^(.*)[/\\][^/\\]+$") or ROOT
+end
+
+local ENGINE_DIR = thisDir()
+local WEB_ROOT = pathJoin(ENGINE_DIR, "web")
+local CLIENT_ROOT = pathJoin(ENGINE_DIR, "..", "LoveDiepClient")
+
 local MIME = {
-    [".json"] = "application/json; charset=utf-8"
+    [".json"] = "application/json; charset=utf-8",
+    [".html"] = "text/html; charset=utf-8",
+    [".js"] = "text/javascript; charset=utf-8",
+    [".css"] = "text/css; charset=utf-8",
+    [".wasm"] = "application/wasm",
+    [".lua"] = "text/plain; charset=utf-8",
+    [".txt"] = "text/plain; charset=utf-8",
+    [".love"] = "application/octet-stream"
 }
 
 local function getExt(p)
@@ -64,15 +85,70 @@ local function writeHttp(socket, status, headers, body)
     end)
 end
 
-local function sendFile(socket, filePath, status)
+local function sendFile(socket, filePath, status, headers)
     status = status or "200 OK"
     fs.readFile(filePath, function(err, data)
         if err or not data then
             writeHttp(socket, "404 Not Found", { ["Content-Type"] = "text/plain" }, "Not Found")
             return
         end
-        writeHttp(socket, status, { ["Content-Type"] = MIME[getExt(filePath)] or "application/octet-stream" }, data)
+        headers = headers or {}
+        if not headers["Content-Type"] then
+            headers["Content-Type"] = MIME[getExt(filePath)] or "application/octet-stream"
+        end
+        writeHttp(socket, status, headers, data)
     end)
+end
+
+local function webHeaders(contentType)
+    return {
+        ["Content-Type"] = contentType,
+        ["Cross-Origin-Opener-Policy"] = "same-origin",
+        ["Cross-Origin-Embedder-Policy"] = "require-corp",
+        ["Cross-Origin-Resource-Policy"] = "same-origin"
+    }
+end
+
+local function webFile(rel)
+    local parts = { WEB_ROOT }
+    for seg in tostring(rel or ""):gmatch("[^/\\]+") do
+        if seg == ".." or seg == "." then
+            return nil
+        end
+        parts[#parts + 1] = seg
+    end
+    if #parts < 2 then
+        return nil
+    end
+    return pathJoin(unpack(parts))
+end
+
+local function serveClient(socket, pathname)
+    if pathname == "/" or pathname == "/index.html" then
+        return sendFile(socket, pathJoin(WEB_ROOT, "index.html"), "200 OK", webHeaders("text/html; charset=utf-8"))
+    end
+    if pathname == "/client.love" then
+        local data, err = Pack.zip(CLIENT_ROOT)
+        if not data then
+            util.log("Web client pack failed: " .. tostring(err))
+            return writeHttp(socket, "500 Internal Server Error", {
+                ["Content-Type"] = "text/plain"
+            }, "Could not pack the LÖVE client")
+        end
+        local headers = webHeaders("application/octet-stream")
+        headers["Cache-Control"] = "no-store"
+        return writeHttp(socket, "200 OK", headers, data)
+    end
+    local rel = (pathname or "/"):gsub("^/+", "")
+    if rel == "" or rel:find("%.%.", 1, true) then
+        return writeHttp(socket, "404 Not Found", { ["Content-Type"] = "text/plain" }, "Not Found")
+    end
+    local filePath = webFile(rel)
+    local stat = filePath and uv.fs_stat(filePath)
+    if not filePath or not stat or stat.type ~= "file" then
+        return writeHttp(socket, "404 Not Found", { ["Content-Type"] = "text/plain" }, "Not Found")
+    end
+    return sendFile(socket, filePath, "200 OK", webHeaders(MIME[getExt(filePath)] or "application/octet-stream"))
 end
 
 local function jsonReply(socket, obj)
@@ -128,7 +204,7 @@ local function handleHttp(req, socket)
         return handleApi(pathname, socket)
     end
 
-    writeHttp(socket, "404 Not Found", { ["Content-Type"] = "text/plain" }, "Not Found")
+    return serveClient(socket, pathname)
 end
 
 local function peerIp(socket)
@@ -292,6 +368,10 @@ local server = net.createServer(onConnection)
 
 server:listen(config.serverPort, "0.0.0.0", function()
     util.log("Listening on port " .. tostring(config.serverPort))
+    util.log("Web client http://localhost:" .. tostring(config.serverPort) .. "/")
+    if not uv.fs_stat(CLIENT_ROOT) then
+        util.log("LoveDiepClient not found at " .. CLIENT_ROOT)
+    end
     GameServer:new(FFAArena, "FFA")
     GameServer:new(TeamsArena, "2TDM")
     GameServer:new(FourTeamsArena, "4TDM")

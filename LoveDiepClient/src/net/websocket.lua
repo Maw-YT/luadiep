@@ -1,7 +1,8 @@
 local bit = require("bit")
 local class = require("src.lib.class")
-local Tcp = require("src.net.tcp")
 local Url = require("src.net.url")
+local Web = require("src.net.web")
+local B64 = require("src.lib.b64")
 
 local OP_CONT, OP_TEXT, OP_BIN, OP_CLOSE, OP_PING, OP_PONG = 0, 1, 2, 8, 9, 10
 local MAX_PAYLOAD = 1 * 1024 * 1024
@@ -87,7 +88,10 @@ end
 local WebSocket = class()
 
 function WebSocket:init()
-    self.tcp = Tcp:new()
+    self._web = Web.active()
+    if not self._web then
+        self.tcp = require("src.net.tcp"):new()
+    end
     self.state = "closed"
     self.buffer = ""
     self.cont = nil
@@ -125,6 +129,18 @@ function WebSocket:connect(target)
     self.cont = nil
     self.err = nil
     self.state = "connecting"
+    if self._web then
+        local id, openErr = Web.openSocket(Web.socketUrl(target))
+        if not id then
+            self.state = "closed"
+            self.err = openErr or "connect failed"
+            return false, self.err
+        end
+        self._id = id
+        self._bin = {}
+        self._openedAt = love.timer.getTime()
+        return true
+    end
     local ok, err = self.tcp:connect(self.host, self.port, target.tls)
     if not ok then
         self.state = "closed"
@@ -220,8 +236,67 @@ function WebSocket:_dispatch(frame)
     end
 end
 
+function WebSocket:_takeWeb(ev)
+    if ev == "open" then
+        self.state = "open"
+        if self.onOpen then
+            self.onOpen()
+        end
+        return
+    end
+    if ev == "close" or ev:sub(1, 4) == "err\t" then
+        if ev:sub(1, 4) == "err\t" then
+            self.err = ev:sub(5)
+            if self.err == "" then
+                self.err = "connection failed"
+            end
+        end
+        self.err = self.err or "connection closed"
+        self:close()
+        return
+    end
+    local idx, total, payload = ev:match("^bin\t(%d+)\t(%d+)\t(.*)$")
+    if not idx then
+        return
+    end
+    local i = tonumber(idx) or 0
+    local n = tonumber(total) or 1
+    self._bin[i + 1] = B64.decode(payload)
+    if i + 1 ~= n then
+        return
+    end
+    local data = table.concat(self._bin)
+    self._bin = {}
+    if #data > MAX_PAYLOAD then
+        self.err = "network buffer overflow"
+        self:close()
+        return
+    end
+    if self.onMessage then
+        self.onMessage(data, true)
+    end
+end
+
 function WebSocket:update()
     if self.state == "closed" then return end
+    if self._web then
+        if self.state == "connecting" and self._openedAt and (love.timer.getTime() - self._openedAt) > 12 then
+            self.err = "timed out"
+            self:close()
+            return
+        end
+        for _ = 1, 64 do
+            local ev = Web.poll(self._id)
+            if not ev then
+                break
+            end
+            self:_takeWeb(ev)
+            if self.state == "closed" then
+                return
+            end
+        end
+        return
+    end
     self.tcp:update()
     if self.tcp.err and self.state ~= "closed" then
         self.err = self.tcp.err
@@ -286,11 +361,23 @@ end
 
 function WebSocket:sendBinary(data)
     if self.state ~= "open" then return end
+    if self._web then
+        Web.send(self._id, data)
+        return
+    end
     self.tcp:send(encodeFrame(OP_BIN, data, true))
 end
 
 function WebSocket:close()
     if self.state == "closed" then return end
+    if self._web then
+        local id = self._id
+        self.state = "closed"
+        self._id = nil
+        Web.close(id)
+        if self.onClose then self.onClose(self.err) end
+        return
+    end
     if self.state == "open" then
         pcall(function() self.tcp:send(encodeFrame(OP_CLOSE, "", true)) end)
     end

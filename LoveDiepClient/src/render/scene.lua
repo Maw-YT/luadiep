@@ -153,7 +153,20 @@ local MODE_SPHERE, MODE_CYL, MODE_RAW, MODE_FLAT = 0, 1, 2, 3
 local depthShader
 local sphereMesh, cylMesh
 local prismCache, prismCacheN, PRISM_CACHE_MAX = {}, 0, 384
-do
+local function graphics()
+    if type(love) ~= "table" then return nil end
+    local g = love.graphics
+    if type(g) ~= "table" or type(g.newShader) ~= "function" or type(g.newMesh) ~= "function" then
+        return nil
+    end
+    return g
+end
+
+local function compileDepthShader()
+    local g = graphics()
+    if not g then
+        return
+    end
     local src = [[
         varying float vDepth;
         varying float vNd;
@@ -232,7 +245,7 @@ do
     }
     local lastErr
     for i = 1, #attempts do
-        local ok, sh = pcall(love.graphics.newShader, attempts[i])
+        local ok, sh = pcall(g.newShader, attempts[i])
         if ok then
             depthShader = sh
             lastErr = nil
@@ -253,10 +266,17 @@ end
 
 local function newStaticMesh(verts)
     if not verts or #verts < 3 then return nil end
-    return love.graphics.newMesh(MESH_FORMAT, verts, "triangles", "static")
+    local g = graphics()
+    if not g then return nil end
+    local ok, mesh = pcall(g.newMesh, MESH_FORMAT, verts, "triangles", "static")
+    if not ok then
+        print("[LoveDiepClient] mesh: " .. tostring(mesh))
+        return nil
+    end
+    return mesh
 end
 
-do
+local function buildSphereMesh()
     local verts = {}
     for st = SPHERE_STACKS - 1, 0, -1 do
         local outer, inner = sphereLat[st + 1], sphereLat[st]
@@ -288,7 +308,7 @@ do
     sphereMesh = newStaticMesh(verts)
 end
 
-do
+local function buildCylMesh()
     local verts = {}
     for i = 0, CYL_SEGS - 1 do
         local a, b = cylRing[i], cylRing[i + 1]
@@ -312,8 +332,21 @@ do
     cylMesh = newStaticMesh(verts)
 end
 
+local gpuReady = false
+local function ensureGpu()
+    if gpuReady then return end
+    if not graphics() then
+        return
+    end
+    gpuReady = true
+    compileDepthShader()
+    buildSphereMesh()
+    buildCylMesh()
+end
+
 local _shadeOn = false
 local function sendU(name, value)
+    ensureGpu()
     if not depthShader then return end
     pcall(depthShader.send, depthShader, name, value)
 end
@@ -333,6 +366,7 @@ local function sendObj()
 end
 
 local function bindShade()
+    ensureGpu()
     if not depthShader then return end
     if not _shadeOn then
         love.graphics.setShader(depthShader)
@@ -357,6 +391,10 @@ local function setMode(mode, radius, cyl, off)
 end
 
 local function drawGpuMesh(mesh, mode, radius, cyl, off)
+    ensureGpu()
+    if not mesh then
+        if mode == MODE_SPHERE then mesh = sphereMesh else mesh = cylMesh end
+    end
     if not mesh then return end
     bindShade()
     setMode(mode, radius, cyl, off)
@@ -423,6 +461,7 @@ local function nrm3(x, y, z)
 end
 
 local function litCol(fill, nx, ny, nz, opacity)
+    ensureGpu()
     local nwx = nx * _angC - ny * _angS
     local nwy = nx * _angS + ny * _angC
     local nd = nwx * _lx + nwy * _ly + nz * _lz

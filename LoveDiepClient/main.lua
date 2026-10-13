@@ -1,3 +1,13 @@
+-- The web build is PUC Lua. A native `bit` module there is not LuaJIT's bitop,
+-- and indexing it crashes while the renderer loads. Desktop LuaJIT keeps `bit`.
+if type(jit) ~= "table" then
+    local pure = require("src.lib.bitop")
+    package.preload["bit"] = function()
+        return pure
+    end
+    package.loaded["bit"] = pure
+end
+
 local Game = require("src.app.game")
 
 local game
@@ -63,7 +73,7 @@ function love.run()
         if on == vsyncOn then return end
         vsyncOn = on
         if love.window.setVSync then
-            love.window.setVSync(on and 1 or 0)
+            pcall(love.window.setVSync, on and 1 or 0)
         end
     end
     return function()

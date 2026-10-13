@@ -1,4 +1,5 @@
 local json = require("src.lib.json")
+local Web = require("src.net.web")
 
 local Settings = {
     style = "new",
@@ -47,7 +48,7 @@ function Settings.load()
         if ok and type(data) == "table" then
             if data.style == "old" then
                 Settings.style = "old"
-            elseif data.style == "shaded" then
+            elseif data.style == "shaded" and not Web.active() then
                 Settings.style = "shaded"
             else
                 Settings.style = "new"
@@ -96,7 +97,7 @@ end
 function Settings.setStyle(style)
     if style == "old" then
         Settings.style = "old"
-    elseif style == "shaded" then
+    elseif style == "shaded" and not Web.active() then
         Settings.style = "shaded"
     else
         Settings.style = "new"

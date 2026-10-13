@@ -1,25 +1,49 @@
-local ffi = require("ffi")
 local bit = require("bit")
 local class = require("src.lib.class")
 
-pcall(function()
-    ffi.cdef[[
-        typedef union { float f; int32_t i; uint32_t u; uint8_t b[4]; } f32conv;
-    ]]
-end)
+local ffiOk, ffi = pcall(require, "ffi")
+local conv
+if ffiOk then
+    pcall(function()
+        ffi.cdef[[
+            typedef union { float f; int32_t i; uint32_t u; uint8_t b[4]; } f32conv;
+        ]]
+    end)
+    conv = ffi.new("f32conv")
+else
+    ffi = nil
+end
 
-local conv = ffi.new("f32conv")
 local CHUNK = 2048
+
+local function f32(val)
+    if conv then
+        conv.f = val + 0.0
+        return conv.b[0], conv.b[1], conv.b[2], conv.b[3], conv.i
+    end
+    local packed = love.data.pack("string", "<f", val + 0.0)
+    local b0, b1, b2, b3 = packed:byte(1, 4)
+    local u = b0 + b1 * 256 + b2 * 65536 + b3 * 16777216
+    if u >= 2147483648 then
+        u = u - 4294967296
+    end
+    return b0, b1, b2, b3, u
+end
 
 local Writer = class()
 
 function Writer:init()
     self._at = 0
-    self._cap = CHUNK
-    self._buf = ffi.new("uint8_t[?]", self._cap)
+    if ffi then
+        self._cap = CHUNK
+        self._buf = ffi.new("uint8_t[?]", self._cap)
+    else
+        self._bytes = {}
+    end
 end
 
 function Writer:_ensure(n)
+    if not ffi then return end
     if self._at + n + 8 <= self._cap then return end
     local newCap = self._cap + CHUNK
     while self._at + n + 8 > newCap do
@@ -31,41 +55,45 @@ function Writer:_ensure(n)
     self._cap = newCap
 end
 
-function Writer:u8(val)
-    self:_ensure(1)
-    self._buf[self._at] = bit.band(val, 0xFF)
+function Writer:_put(val)
+    val = bit.band(val, 0xFF)
+    if ffi then
+        self:_ensure(1)
+        self._buf[self._at] = val
+        self._at = self._at + 1
+        return
+    end
     self._at = self._at + 1
+    self._bytes[self._at] = string.char(val)
+end
+
+function Writer:u8(val)
+    self:_put(val)
     return self
 end
 
 function Writer:u16(val)
-    self:_ensure(2)
     val = bit.band(val, 0xFFFF)
-    self._buf[self._at] = bit.band(val, 0xFF)
-    self._buf[self._at + 1] = bit.rshift(val, 8)
-    self._at = self._at + 2
+    self:_put(val)
+    self:_put(bit.rshift(val, 8))
     return self
 end
 
 function Writer:u32(val)
-    self:_ensure(4)
     val = bit.tobit(val)
-    self._buf[self._at] = bit.band(val, 0xFF)
-    self._buf[self._at + 1] = bit.band(bit.rshift(val, 8), 0xFF)
-    self._buf[self._at + 2] = bit.band(bit.rshift(val, 16), 0xFF)
-    self._buf[self._at + 3] = bit.band(bit.rshift(val, 24), 0xFF)
-    self._at = self._at + 4
+    self:_put(val)
+    self:_put(bit.rshift(val, 8))
+    self:_put(bit.rshift(val, 16))
+    self:_put(bit.rshift(val, 24))
     return self
 end
 
 function Writer:float(val)
-    self:_ensure(4)
-    conv.f = val + 0.0
-    self._buf[self._at] = conv.b[0]
-    self._buf[self._at + 1] = conv.b[1]
-    self._buf[self._at + 2] = conv.b[2]
-    self._buf[self._at + 3] = conv.b[3]
-    self._at = self._at + 4
+    local b0, b1, b2, b3 = f32(val)
+    self:_put(b0)
+    self:_put(b1)
+    self:_put(b2)
+    self:_put(b3)
     return self
 end
 
@@ -89,8 +117,7 @@ function Writer:vi(val)
 end
 
 function Writer:vf(val)
-    conv.f = val + 0.0
-    local num = conv.i
+    local _, _, _, _, num = f32(val)
     local swapped = bit.bor(
         bit.lshift(bit.band(num, 0xFF), 24),
         bit.lshift(bit.band(num, 0xFF00), 8),
@@ -102,18 +129,18 @@ end
 
 function Writer:stringNT(s)
     s = s or ""
-    self:_ensure(#s + 1)
     for i = 1, #s do
-        self._buf[self._at] = s:byte(i)
-        self._at = self._at + 1
+        self:_put(s:byte(i))
     end
-    self._buf[self._at] = 0
-    self._at = self._at + 1
+    self:_put(0)
     return self
 end
 
 function Writer:write()
-    return ffi.string(self._buf, self._at)
+    if ffi then
+        return ffi.string(self._buf, self._at)
+    end
+    return table.concat(self._bytes, "", 1, self._at)
 end
 
 return Writer

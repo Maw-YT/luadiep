@@ -1,3 +1,5 @@
+local Web = require("src.net.web")
+
 local Render = {}
 Render._scale = 1
 Render._camX = 0
@@ -12,7 +14,7 @@ function Render.setStyle(style)
     local nextStyle = "new"
     if style == "old" then
         nextStyle = "old"
-    elseif style == "shaded" then
+    elseif style == "shaded" and not Web.active() then
         nextStyle = "shaded"
     end
     if Render._style ~= nextStyle then

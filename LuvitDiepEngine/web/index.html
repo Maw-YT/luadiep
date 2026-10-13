@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>LoveDiep</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    html, body { height: 100%; background: #888; }
+  </style>
+  <script>
+    window.DiepWeb = (function () {
+      var sockets = {};
+      var nextId = 1;
+      var inbox = [];
+      var bodies = {};
+
+      function b64(bytes) {
+        var bin = "";
+        for (var i = 0; i < bytes.length; i++) {
+          bin += String.fromCharCode(bytes[i]);
+        }
+        return btoa(bin);
+      }
+
+      function chunks(bytes) {
+        var size = 6000;
+        var out = [];
+        var n = Math.max(1, Math.ceil(bytes.length / size));
+        for (var c = 0; c < n; c++) {
+          var slice = bytes.subarray(c * size, Math.min(bytes.length, (c + 1) * size));
+          out.push(b64(slice));
+        }
+        return out;
+      }
+
+      return {
+        page: function () {
+          var https = location.protocol === "https:" ? "1" : "0";
+          return https + "\t" + location.host;
+        },
+        open: function (url) {
+          var id = String(nextId++);
+          var ws = new WebSocket(url);
+          ws.binaryType = "arraybuffer";
+          sockets[id] = ws;
+          ws.onopen = function () { inbox.push(id + "\topen"); };
+          ws.onmessage = function (ev) {
+            var bytes = ev.data instanceof ArrayBuffer ? new Uint8Array(ev.data) : new Uint8Array();
+            var parts = chunks(bytes);
+            for (var i = 0; i < parts.length; i++) {
+              inbox.push(id + "\tbin\t" + i + "\t" + parts.length + "\t" + parts[i]);
+            }
+          };
+          ws.onerror = function () { inbox.push(id + "\terr\tfailed"); };
+          ws.onclose = function () { inbox.push(id + "\tclose"); };
+          return id;
+        },
+        send: function (id, payload) {
+          var ws = sockets[id];
+          if (!ws || ws.readyState !== 1) return "0";
+          var bin = atob(payload || "");
+          var bytes = new Uint8Array(bin.length);
+          for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          ws.send(bytes);
+          return "1";
+        },
+        close: function (id) {
+          var ws = sockets[id];
+          if (ws) {
+            try { ws.close(); } catch (e) {}
+            delete sockets[id];
+          }
+          return "1";
+        },
+        pull: function () {
+          if (inbox.length === 0) return "";
+          return inbox.shift();
+        },
+        fetchGet: function (url) {
+          var id = String(nextId++);
+          fetch(url, { credentials: "same-origin", headers: { "Accept": "application/json" } })
+            .then(function (res) {
+              return res.arrayBuffer().then(function (buf) {
+                return { ok: res.ok, status: res.status, buf: new Uint8Array(buf) };
+              });
+            })
+            .then(function (res) {
+              var parts = chunks(res.buf);
+              bodies[id] = parts;
+              inbox.push(id + "\thttp\t" + (res.ok ? "1" : "0") + "\t" + res.status + "\t" + parts.length);
+            })
+            .catch(function () {
+              bodies[id] = [];
+              inbox.push(id + "\thttp\t0\t0\t0");
+            });
+          return id;
+        },
+        body: function (id, index) {
+          var parts = bodies[id];
+          if (!parts || index < 0 || index >= parts.length) return "";
+          var part = parts[index] || "";
+          if (index + 1 >= parts.length) delete bodies[id];
+          return part;
+        }
+      };
+    })();
+  </script>
+</head>
+<body>
+  <canvas id="canvas" tabindex="0"></canvas>
+  <script src="player.js?g=client.love&v=11.5&n=1"></script>
+</body>
+</html>
